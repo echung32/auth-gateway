@@ -1,5 +1,5 @@
 import { cloudflareTest } from "@cloudflare/vitest-pool-workers";
-import { defineConfig } from "vitest/config";
+import { defineConfig, configDefaults } from "vitest/config";
 
 // A real, valid Ed25519 private JWK used only in tests. Secrets are not in
 // wrangler.jsonc, so the test harness supplies them via Miniflare bindings.
@@ -26,4 +26,7 @@ export default defineConfig({
 			},
 		}),
 	],
+	test: {
+		exclude: [...configDefaults.exclude, "packages/**"],
+	},
 });

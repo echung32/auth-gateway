@@ -34,11 +34,13 @@ describe("requireUser", () => {
 	});
 
 	it("throws a 401 Response when no token is present", async () => {
+		await expect(requireUser(new Request("https://app"), OPTS)).rejects.toBeInstanceOf(Response);
 		await expect(requireUser(new Request("https://app"), OPTS)).rejects.toMatchObject({ status: 401 });
 	});
 
 	it("throws a 401 Response for a tampered token", async () => {
 		const req = new Request("https://app", { headers: { authorization: `Bearer ${goodToken}x` } });
+		await expect(requireUser(req, OPTS)).rejects.toBeInstanceOf(Response);
 		await expect(requireUser(req, OPTS)).rejects.toMatchObject({ status: 401 });
 	});
 });
