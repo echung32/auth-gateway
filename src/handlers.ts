@@ -27,7 +27,12 @@ export async function callback(c: Ctx): Promise<Response> {
 	}
 	if (!code) return c.text("missing code", 400);
 
-	const user = await exchangeGithubCode(c.env, code);
+	let user;
+	try {
+		user = await exchangeGithubCode(c.env, code);
+	} catch {
+		return c.text("authentication failed", 401);
+	}
 	const access = await issueAccessToken(c.env, user);
 	const refresh = await issueRefreshToken(c.env, user.sub);
 

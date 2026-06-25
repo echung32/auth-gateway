@@ -1,6 +1,6 @@
 import { env } from "cloudflare:workers";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { githubRoutes, stubFetch } from "./helpers";
+import { githubRoutes, json, stubFetch } from "./helpers";
 import app from "../src/index";
 
 afterEach(() => vi.unstubAllGlobals());
@@ -31,6 +31,21 @@ describe("auth routes", () => {
 	it("rejects /callback with an unknown state", async () => {
 		const res = await app.request("/callback?code=c&state=bogus", {}, env, ctx());
 		expect(res.status).toBe(400);
+	});
+
+	it("returns 401 when the GitHub code exchange fails", async () => {
+		// Token endpoint replies with an OAuth error -> arctic throws -> 401.
+		stubFetch([
+			{
+				match: (u, m) => u.includes("github.com/login/oauth/access_token") && m === "POST",
+				respond: () => json({ error: "bad_verification_code" }, 400),
+			},
+		]);
+		const authRes = await app.request("/authorize?redirect_uri=https://app1.yourdomain.com/cb", {}, env, ctx());
+		const state = new URL(authRes.headers.get("location")!).searchParams.get("state")!;
+		const res = await app.request(`/callback?code=bad&state=${state}`, {}, env, ctx());
+		expect(res.status).toBe(401);
+		expect(res.headers.getSetCookie().length).toBe(0);
 	});
 
 	it("completes /callback: sets cookies and redirects back", async () => {
