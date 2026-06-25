@@ -44,3 +44,28 @@ describe("CORS for browser refresh", () => {
 		expect(res.headers.get("access-control-allow-credentials")).toBe("true");
 	});
 });
+
+describe("CORS for /logout", () => {
+	it("answers preflight for an allowlisted origin with credentialed CORS", async () => {
+		const res = await app.request(
+			"/logout",
+			{ method: "OPTIONS", headers: { origin: "https://app1.yourdomain.com" } },
+			env,
+			ctx(),
+		);
+		expect(res.status).toBe(204);
+		expect(res.headers.get("access-control-allow-origin")).toBe("https://app1.yourdomain.com");
+		expect(res.headers.get("access-control-allow-credentials")).toBe("true");
+	});
+
+	it("POST /logout from an allowlisted origin carries CORS headers", async () => {
+		const res = await app.request(
+			"/logout",
+			{ method: "POST", headers: { origin: "https://app1.yourdomain.com" } },
+			env,
+			ctx(),
+		);
+		expect(res.headers.get("access-control-allow-origin")).toBe("https://app1.yourdomain.com");
+		expect(res.headers.get("access-control-allow-credentials")).toBe("true");
+	});
+});

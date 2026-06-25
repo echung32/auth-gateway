@@ -24,10 +24,10 @@ A centralized OAuth / authentication Cloudflare Worker for a fleet of apps on a 
 |----------|---------|-------------|
 | `ISSUER` | `https://auth.yourdomain.com` | JWT `iss` claim and JWKS base URL. |
 | `AUDIENCE` | `fleet` | JWT `aud` claim; must match resource worker config. |
-| `COOKIE_DOMAIN` | `.yourdomain.com` | Domain for the `__Secure-fleet_at` / `__Secure-fleet_rt` cookies (leading dot enables all subdomains). |
+| `COOKIE_DOMAIN` | `.yourdomain.com` | Domain for the access cookie `__Secure-fleet_at` (leading dot enables all subdomains). The refresh cookie `__Secure-fleet_rt` is host-only (no `Domain` attribute). |
 | `ACCESS_TTL_SEC` | `900` | Access token lifetime in seconds (default: 15 minutes). |
 | `REFRESH_TTL_SEC` | `2592000` | Refresh token lifetime in seconds (default: 30 days). |
-| `REDIRECT_ALLOWLIST` | `["https://app1.yourdomain.com"]` | JSON array of allowed `redirect_uri` values. |
+| `REDIRECT_ALLOWLIST` | `["https://app1.yourdomain.com"]` | JSON array of exact origins (scheme + host + optional port) allowed as `redirect_uri` targets. Also used as the credentialed-CORS origin allowlist for `/token` and `/logout`. |
 | `GITHUB_REDIRECT_URI` | `https://auth.yourdomain.com/callback` | Must match the callback URL registered in your GitHub OAuth App. |
 
 ### `AUTH_KV` — KV namespace

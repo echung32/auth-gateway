@@ -1,5 +1,6 @@
 import { DurableObject } from "cloudflare:workers";
 import { randomToken, sha256 } from "./crypto";
+import type { UserClaims } from "./types";
 
 interface MintedToken {
 	tokenId: string;
@@ -36,17 +37,17 @@ export class RefreshFamily extends DurableObject<Env> {
 		return row?.secret_hash;
 	}
 
-	async issue(userId: string, ttlSec: number): Promise<string> {
+	async issue(claims: UserClaims, ttlSec: number): Promise<string> {
 		this.ensureSchema();
 		const { tokenId, secret, hash } = await mintToken();
 		this.ctx.storage.sql.exec("INSERT INTO tokens (token_id, secret_hash) VALUES (?, ?)", tokenId, hash);
-		await this.ctx.storage.put("userId", userId);
+		await this.ctx.storage.put("claims", claims);
 		await this.ctx.storage.put("head", tokenId);
 		await this.ctx.storage.setAlarm(Date.now() + ttlSec * 1000);
 		return `${tokenId}.${secret}`;
 	}
 
-	async rotate(tokenId: string, secret: string, ttlSec: number): Promise<{ ok: true; userId: string; token: string } | { ok: false }> {
+	async rotate(tokenId: string, secret: string, ttlSec: number): Promise<{ ok: true; claims: UserClaims; token: string } | { ok: false }> {
 		this.ensureSchema();
 		return this.ctx.blockConcurrencyWhile(async () => {
 			const hash = this.lookup(tokenId);
@@ -60,12 +61,12 @@ export class RefreshFamily extends DurableObject<Env> {
 				return { ok: false };
 			}
 
-			const userId = (await this.ctx.storage.get<string>("userId")) ?? "";
+			const claims = (await this.ctx.storage.get<UserClaims>("claims")) ?? { sub: "", email: null, name: null, scopes: [] };
 			const next = await mintToken();
 			this.ctx.storage.sql.exec("INSERT INTO tokens (token_id, secret_hash) VALUES (?, ?)", next.tokenId, next.hash);
 			await this.ctx.storage.put("head", next.tokenId);
 			await this.ctx.storage.setAlarm(Date.now() + ttlSec * 1000);
-			return { ok: true, userId, token: `${next.tokenId}.${next.secret}` };
+			return { ok: true, claims, token: `${next.tokenId}.${next.secret}` };
 		});
 	}
 

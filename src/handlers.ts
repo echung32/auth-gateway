@@ -35,7 +35,7 @@ export async function callback(c: Ctx): Promise<Response> {
 		return c.text("authentication failed", 401);
 	}
 	const access = await issueAccessToken(c.env, user);
-	const refresh = await issueRefreshToken(c.env, user.sub);
+	const refresh = await issueRefreshToken(c.env, user);
 
 	c.header("Set-Cookie", accessCookie(c.env, access), { append: true });
 	c.header("Set-Cookie", refreshCookie(c.env, refresh), { append: true });
@@ -50,8 +50,8 @@ export async function token(c: Ctx): Promise<Response> {
 		return c.text("no refresh token", 401);
 	}
 	try {
-		const { userId, refreshToken } = await rotateRefreshToken(c.env, presented);
-		const access = await issueAccessToken(c.env, { sub: userId, email: null, name: null, scopes: [] });
+		const { user, refreshToken } = await rotateRefreshToken(c.env, presented);
+		const access = await issueAccessToken(c.env, user);
 		c.header("Set-Cookie", accessCookie(c.env, access), { append: true });
 		c.header("Set-Cookie", refreshCookie(c.env, refreshToken), { append: true });
 		if (cors) for (const [k, v] of Object.entries(cors)) c.header(k, v, { append: true });

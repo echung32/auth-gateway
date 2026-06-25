@@ -1,6 +1,7 @@
 import { getConfig } from "./config";
 import { randomToken } from "./crypto";
 import type { RefreshFamily } from "./refreshFamily";
+import type { UserClaims } from "./types";
 
 interface ParsedToken {
 	family: string;
@@ -19,21 +20,21 @@ function familyStub(env: Env, family: string): DurableObjectStub<RefreshFamily> 
 	return ns.get(ns.idFromName(family));
 }
 
-export async function issueRefreshToken(env: Env, userId: string): Promise<string> {
+export async function issueRefreshToken(env: Env, user: UserClaims): Promise<string> {
 	const family = randomToken(16);
-	const token = await familyStub(env, family).issue(userId, getConfig(env).refreshTtlSec);
+	const token = await familyStub(env, family).issue(user, getConfig(env).refreshTtlSec);
 	return `${family}.${token}`;
 }
 
 export async function rotateRefreshToken(
 	env: Env,
 	presented: string,
-): Promise<{ userId: string; refreshToken: string }> {
+): Promise<{ user: UserClaims; refreshToken: string }> {
 	const parsed = parseToken(presented);
 	if (!parsed) throw new Error("malformed refresh token");
 	const result = await familyStub(env, parsed.family).rotate(parsed.tokenId, parsed.secret, getConfig(env).refreshTtlSec);
 	if (!result.ok) throw new Error("invalid refresh token");
-	return { userId: result.userId, refreshToken: `${parsed.family}.${result.token}` };
+	return { user: result.claims, refreshToken: `${parsed.family}.${result.token}` };
 }
 
 export async function revokeRefreshToken(env: Env, presented: string): Promise<void> {
