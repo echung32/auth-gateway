@@ -11,6 +11,14 @@ export async function createState(env: Env, redirectUri: string): Promise<string
 	return nonce;
 }
 
+// Single-use is enforced by get-then-delete. This is NOT atomic on KV (which
+// has no compare-and-swap), so two concurrent /callback requests carrying the
+// same state could both read it before either delete lands. We accept this
+// residual race deliberately: the state's purpose here is CSRF protection,
+// which the unguessable nonce provides regardless, and the actual replay attack
+// (double login) is independently blocked by GitHub's authorization code, which
+// is itself single-use — the second code→token exchange fails at GitHub. Truly
+// atomic single-use would require a Durable Object, which the design avoids.
 export async function consumeState(env: Env, nonce: string): Promise<string> {
 	const redirectUri = await env.AUTH_KV.get(`st:${nonce}`);
 	if (!redirectUri) throw new Error("invalid or expired state");

@@ -125,7 +125,7 @@ apps redirect to `auth.yourdomain.com/authorize?redirect_uri=...`.
 |--------|------------|
 | Token forgery | EdDSA signing; private key only in auth-worker secrets. Resource workers verify, never mint. |
 | Open redirect / token exfiltration | `redirect_uri` checked against a strict allowlist (no wildcards) before any redirect. |
-| CSRF on login | Signed, single-use `state` with short TTL, verified on callback. |
+| CSRF on login | Unguessable single-use `state` (KV, short TTL), verified on callback. Note: KV get-then-delete is not atomic, so a concurrent-callback race could consume state twice; accepted as a documented residual risk because GitHub's single-use authorization code independently blocks the double-login replay. Atomic single-use would require a Durable Object (out of scope). |
 | Cookie theft | `HttpOnly` + `Secure` + `SameSite=Lax`; short access-token lifetime caps damage. |
 | Refresh-token leak | Opaque, server-side in KV, rotated on use; rotated-token reuse kills the chain. |
 | Audience confusion | JWT `aud` claim; per-worker enforcement optional. Default = fleet-wide. |
