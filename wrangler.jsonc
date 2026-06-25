@@ -25,5 +25,8 @@
 		"REFRESH_TTL_SEC": "2592000",
 		"REDIRECT_ALLOWLIST": "[\"https://app1.yourdomain.com\",\"https://app2.yourdomain.com\"]",
 		"GITHUB_REDIRECT_URI": "https://auth.yourdomain.com/callback"
+	},
+	"secrets": {
+		"required": ["SIGNING_PRIVATE_JWK", "GITHUB_CLIENT_ID", "GITHUB_CLIENT_SECRET"]
 	}
 }
