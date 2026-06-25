@@ -48,32 +48,35 @@ export class RefreshFamily extends DurableObject<Env> {
 
 	async rotate(tokenId: string, secret: string, ttlSec: number): Promise<{ ok: true; userId: string; token: string } | { ok: false }> {
 		this.ensureSchema();
-		const hash = this.lookup(tokenId);
-		if (!hash) return { ok: false };
-		if ((await sha256(secret)) !== hash) return { ok: false };
+		return this.ctx.blockConcurrencyWhile(async () => {
+			const hash = this.lookup(tokenId);
+			if (!hash) return { ok: false };
+			if ((await sha256(secret)) !== hash) return { ok: false };
 
-		const head = await this.ctx.storage.get<string>("head");
-		if (head !== tokenId) {
-			// Reuse of an already-rotated token → revoke the entire family.
-			await this.ctx.storage.deleteAll();
-			return { ok: false };
-		}
+			const head = await this.ctx.storage.get<string>("head");
+			if (head !== tokenId) {
+				// Reuse of an already-rotated token → revoke the entire family.
+				await this.ctx.storage.deleteAll();
+				return { ok: false };
+			}
 
-		const userId = (await this.ctx.storage.get<string>("userId")) ?? "";
-		const next = await mintToken();
-		this.ensureSchema();
-		this.ctx.storage.sql.exec("INSERT INTO tokens (token_id, secret_hash) VALUES (?, ?)", next.tokenId, next.hash);
-		await this.ctx.storage.put("head", next.tokenId);
-		await this.ctx.storage.setAlarm(Date.now() + ttlSec * 1000);
-		return { ok: true, userId, token: `${next.tokenId}.${next.secret}` };
+			const userId = (await this.ctx.storage.get<string>("userId")) ?? "";
+			const next = await mintToken();
+			this.ctx.storage.sql.exec("INSERT INTO tokens (token_id, secret_hash) VALUES (?, ?)", next.tokenId, next.hash);
+			await this.ctx.storage.put("head", next.tokenId);
+			await this.ctx.storage.setAlarm(Date.now() + ttlSec * 1000);
+			return { ok: true, userId, token: `${next.tokenId}.${next.secret}` };
+		});
 	}
 
 	async revoke(tokenId: string, secret: string): Promise<void> {
 		this.ensureSchema();
-		const hash = this.lookup(tokenId);
-		if (!hash) return;
-		if ((await sha256(secret)) !== hash) return;
-		await this.ctx.storage.deleteAll();
+		await this.ctx.blockConcurrencyWhile(async () => {
+			const hash = this.lookup(tokenId);
+			if (!hash) return;
+			if ((await sha256(secret)) !== hash) return;
+			await this.ctx.storage.deleteAll();
+		});
 	}
 
 	async alarm(): Promise<void> {
