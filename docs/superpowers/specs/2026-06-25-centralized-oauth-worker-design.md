@@ -55,7 +55,13 @@ Internal modules kept separate so the phase-2 provider swap is clean:
   `workers-oauth-provider`.
 - **JWKS endpoint** — serves the public key(s) resource workers verify against.
 
-### 2. Shared verification package (`packages/auth-verify`)
+### 2. Shared verification package (`auth-verify`)
+
+Resource workers live in **separate repos**, so the helper is its own standalone
+GitHub repo, built to `dist/`, and installed as a **git dependency**:
+`pnpm add github:<you>/auth-verify#v1`. No npm account, no registry auth; versions
+pinned via git tags. `jose` is a peer dependency the consumer already has. This keeps
+one canonical copy of the security-sensitive verify logic (no copy-paste drift).
 
 A small helper imported by every resource worker:
 
