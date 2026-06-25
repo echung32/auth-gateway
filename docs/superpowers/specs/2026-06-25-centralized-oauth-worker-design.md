@@ -81,7 +81,8 @@ apps redirect to `auth.yourdomain.com/authorize?redirect_uri=...`.
 ### Storage & keys
 
 - `AUTH_KV`: single-use OAuth `state` only. (Refresh tokens moved to a per-family Durable Object — `RefreshFamily` — for atomic rotation/theft-detection.)
-- Secrets: Ed25519 private key (signing), GitHub client ID/secret.
+- Secrets: Ed25519 private key (signing), GitHub client ID/secret. Optional `SIGNING_PUBLIC_JWKS` (JSON array of additional public JWKs) lets the JWKS publish previous keys during a rotation window for zero-downtime key rotation.
+- Refresh: the `RefreshFamily` DO stores the full `UserClaims`, so a refreshed access token carries the same `email`/`name`/`scopes` as the original (no claim degradation across refresh).
 - Access tokens are **not** stored — they are self-verifying JWTs.
 
 ## Data flow
