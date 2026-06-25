@@ -10,3 +10,4 @@ app.post("/logout", logout);
 app.get("/.well-known/jwks.json", jwks);
 
 export default app;
+export { RefreshFamily } from "./refreshFamily";

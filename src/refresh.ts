@@ -1,39 +1,28 @@
 import { getConfig } from "./config";
+import { randomToken } from "./crypto";
+import type { RefreshFamily } from "./refreshFamily";
 
-interface RefreshRecord {
-	userId: string;
-	secretHash: string;
+interface ParsedToken {
 	family: string;
+	tokenId: string;
+	secret: string;
 }
 
-function randomToken(bytes: number): string {
-	const buf = crypto.getRandomValues(new Uint8Array(bytes));
-	return btoa(String.fromCharCode(...buf)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+function parseToken(presented: string): ParsedToken | null {
+	const parts = presented.split(".");
+	if (parts.length !== 3 || !parts[0] || !parts[1] || !parts[2]) return null;
+	return { family: parts[0], tokenId: parts[1], secret: parts[2] };
 }
 
-async function sha256(input: string): Promise<string> {
-	const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(input));
-	return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
-}
-
-async function writeToken(env: Env, userId: string, family: string): Promise<string> {
-	const ttl = getConfig(env).refreshTtlSec;
-	const tokenId = randomToken(16);
-	const secret = randomToken(32);
-	const record: RefreshRecord = { userId, secretHash: await sha256(secret), family };
-	await env.AUTH_KV.put(`rt:${tokenId}`, JSON.stringify(record), { expirationTtl: ttl });
-	await env.AUTH_KV.put(`fam:${family}`, tokenId, { expirationTtl: ttl });
-	return `${tokenId}.${secret}`;
+function familyStub(env: Env, family: string): DurableObjectStub<RefreshFamily> {
+	const ns = env.REFRESH_FAMILY as unknown as DurableObjectNamespace<RefreshFamily>;
+	return ns.get(ns.idFromName(family));
 }
 
 export async function issueRefreshToken(env: Env, userId: string): Promise<string> {
-	return writeToken(env, userId, randomToken(16));
-}
-
-function parseToken(presented: string): { tokenId: string; secret: string } | null {
-	const parts = presented.split(".");
-	if (parts.length !== 2 || !parts[0] || !parts[1]) return null;
-	return { tokenId: parts[0], secret: parts[1] };
+	const family = randomToken(16);
+	const token = await familyStub(env, family).issue(userId, getConfig(env).refreshTtlSec);
+	return `${family}.${token}`;
 }
 
 export async function rotateRefreshToken(
@@ -42,37 +31,16 @@ export async function rotateRefreshToken(
 ): Promise<{ userId: string; refreshToken: string }> {
 	const parsed = parseToken(presented);
 	if (!parsed) throw new Error("malformed refresh token");
-	const { tokenId, secret } = parsed;
-
-	const raw = await env.AUTH_KV.get(`rt:${tokenId}`);
-	if (!raw) throw new Error("unknown refresh token");
-	const record = JSON.parse(raw) as RefreshRecord;
-
-	if ((await sha256(secret)) !== record.secretHash) throw new Error("bad refresh secret");
-
-	const head = await env.AUTH_KV.get(`fam:${record.family}`);
-	if (head !== tokenId) {
-		// Reuse of a rotated token → revoke the entire family.
-		await env.AUTH_KV.delete(`fam:${record.family}`);
-		await env.AUTH_KV.delete(`rt:${tokenId}`);
-		throw new Error("refresh token reuse detected");
-	}
-
-	// Do NOT delete rt:${tokenId} here — keeping the old record allows
-	// theft detection: if it is presented again after rotation, the fam: head
-	// will no longer match and the whole family will be revoked.
-	const refreshToken = await writeToken(env, record.userId, record.family);
-	return { userId: record.userId, refreshToken };
+	const { userId, token } = await familyStub(env, parsed.family).rotate(
+		parsed.tokenId,
+		parsed.secret,
+		getConfig(env).refreshTtlSec,
+	);
+	return { userId, refreshToken: `${parsed.family}.${token}` };
 }
 
 export async function revokeRefreshToken(env: Env, presented: string): Promise<void> {
 	const parsed = parseToken(presented);
 	if (!parsed) return;
-	const { tokenId, secret } = parsed;
-	const raw = await env.AUTH_KV.get(`rt:${tokenId}`);
-	if (!raw) return;
-	const record = JSON.parse(raw) as RefreshRecord;
-	if ((await sha256(secret)) !== record.secretHash) return;
-	await env.AUTH_KV.delete(`fam:${record.family}`);
-	await env.AUTH_KV.delete(`rt:${tokenId}`);
+	await familyStub(env, parsed.family).revoke(parsed.tokenId, parsed.secret);
 }

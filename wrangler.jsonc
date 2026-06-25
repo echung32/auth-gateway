@@ -17,6 +17,12 @@
 	"kv_namespaces": [
 		{ "binding": "AUTH_KV", "id": "placeholder_kv_id" }
 	],
+	"durable_objects": {
+		"bindings": [{ "name": "REFRESH_FAMILY", "class_name": "RefreshFamily" }]
+	},
+	"migrations": [
+		{ "tag": "v1", "new_sqlite_classes": ["RefreshFamily"] }
+	],
 	"vars": {
 		"ISSUER": "https://auth.yourdomain.com",
 		"AUDIENCE": "fleet",
