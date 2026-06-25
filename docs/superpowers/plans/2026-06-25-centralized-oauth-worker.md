@@ -164,7 +164,7 @@ Add to `"scripts"`: `"test": "vitest run"`.
 Create `test/config.test.ts`:
 
 ```typescript
-import { env } from "cloudflare:test";
+import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 import { getConfig, isAllowedRedirect } from "../src/config";
 
@@ -292,7 +292,7 @@ node scripts/generate-keys.mjs
 `test/keys.test.ts` (reads the test signing key supplied by `vitest.config.ts`):
 
 ```typescript
-import { env } from "cloudflare:test";
+import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 import { getPublicJwks, loadSigningKey } from "../src/keys";
 
@@ -372,7 +372,7 @@ git commit -m "feat: signing key loader, public JWKS, key-gen script"
 `test/tokens.test.ts` (verifies the issued JWT with `jose` against the public JWKS):
 
 ```typescript
-import { env } from "cloudflare:test";
+import { env } from "cloudflare:workers";
 import { createLocalJWKSet, jwtVerify } from "jose";
 import { describe, expect, it } from "vitest";
 import { getPublicJwks } from "../src/keys";
@@ -461,7 +461,7 @@ Storage model: `rt:<tokenId>` → `{ userId, secretHash, family }`; `fam:<family
 `test/refresh.test.ts`:
 
 ```typescript
-import { env } from "cloudflare:test";
+import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 import { issueRefreshToken, revokeRefreshToken, rotateRefreshToken } from "../src/refresh";
 
@@ -603,7 +603,7 @@ git commit -m "feat: rotating refresh tokens with theft detection in KV"
 `test/state.test.ts`:
 
 ```typescript
-import { env } from "cloudflare:test";
+import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 import { consumeState, createState } from "../src/state";
 
@@ -798,6 +798,7 @@ git commit -m "feat: cookie builders and token readers"
 
 **Files:**
 - Create: `src/github.ts`
+- Create: `test/helpers.ts` (shared fetch-stub helper, reused by Tasks 8 and 10)
 - Test: `test/github.test.ts`
 
 **Interfaces:**
@@ -808,17 +809,62 @@ git commit -m "feat: cookie builders and token readers"
 
 `exchangeGithubCode` uses `arctic` to swap the code for a GitHub access token, then fetches `https://api.github.com/user` and `https://api.github.com/user/emails` (a `User-Agent` header is required by GitHub), returning a normalized `UserClaims` with `sub = "gh|<id>"` and the primary verified email.
 
-- [ ] **Step 1: Write the failing GitHub test (outbound calls stubbed with `fetchMock`)**
+> **Note on outbound-fetch mocking:** this project uses `@cloudflare/vitest-pool-workers` v0.16 (Vitest 4), where the old `fetchMock` export from `cloudflare:test` **was removed**. The supported approach is to mock `globalThis.fetch` directly. Tasks 7, 8, and 10 share one small test helper for that.
+
+- [ ] **Step 1a: Create the shared fetch-stub helper**
+
+`test/helpers.ts`:
+
+```typescript
+import { vi } from "vitest";
+
+export interface Route {
+	match: (url: string, method: string) => boolean;
+	respond: () => Response;
+}
+
+export function json(body: unknown, status = 200): Response {
+	return new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
+}
+
+/** Replace globalThis.fetch with a router over the given routes. Call vi.unstubAllGlobals() in afterEach. */
+export function stubFetch(routes: Route[]): void {
+	vi.stubGlobal(
+		"fetch",
+		vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+			const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+			const method = (init?.method ?? (input instanceof Request ? input.method : "GET")).toUpperCase();
+			for (const r of routes) if (r.match(url, method)) return r.respond();
+			throw new Error(`unexpected fetch: ${method} ${url}`);
+		}),
+	);
+}
+
+/** Routes that emulate the GitHub OAuth token exchange + profile + emails calls. */
+export function githubRoutes(profile: { id: number; login: string; name: string | null }, email: string): Route[] {
+	return [
+		{
+			match: (u, m) => u.includes("github.com/login/oauth/access_token") && m === "POST",
+			respond: () => json({ access_token: "gho", token_type: "bearer", scope: "user:email" }),
+		},
+		// /user/emails MUST be matched before /user (both contain "api.github.com/user").
+		{ match: (u) => u.includes("api.github.com/user/emails"), respond: () => json([{ email, primary: true, verified: true }]) },
+		{ match: (u) => u.includes("api.github.com/user"), respond: () => json(profile) },
+	];
+}
+```
+
+- [ ] **Step 1b: Write the failing GitHub test**
 
 `test/github.test.ts`:
 
 ```typescript
-import { env, fetchMock } from "cloudflare:test";
-import { afterEach, beforeAll, describe, expect, it } from "vitest";
+import { env } from "cloudflare:workers";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { exchangeGithubCode, githubAuthUrl } from "../src/github";
+import { githubRoutes, stubFetch } from "./helpers";
 
-beforeAll(() => fetchMock.activate());
-afterEach(() => fetchMock.assertNoPendingInterceptors());
+afterEach(() => vi.unstubAllGlobals());
 
 describe("github adapter", () => {
 	it("builds an authorization url carrying the state", () => {
@@ -827,20 +873,12 @@ describe("github adapter", () => {
 		expect(url.searchParams.get("state")).toBe("the-state");
 	});
 
-	it("exchanges a code into normalized user claims", () => {
-		fetchMock.get("https://github.com").intercept({ path: /login\/oauth\/access_token/, method: "POST" })
-			.reply(200, { access_token: "gho_test", token_type: "bearer", scope: "user:email" },
-				{ headers: { "content-type": "application/json" } });
-		fetchMock.get("https://api.github.com").intercept({ path: "/user" })
-			.reply(200, { id: 99, login: "octocat", name: "Octo Cat" });
-		fetchMock.get("https://api.github.com").intercept({ path: "/user/emails" })
-			.reply(200, [{ email: "octo@github.com", primary: true, verified: true }]);
-
-		return exchangeGithubCode(env, "code123").then((user) => {
-			expect(user.sub).toBe("gh|99");
-			expect(user.email).toBe("octo@github.com");
-			expect(user.name).toBe("Octo Cat");
-		});
+	it("exchanges a code into normalized user claims", async () => {
+		stubFetch(githubRoutes({ id: 99, login: "octocat", name: "Octo Cat" }, "octo@github.com"));
+		const user = await exchangeGithubCode(env, "code123");
+		expect(user.sub).toBe("gh|99");
+		expect(user.email).toBe("octo@github.com");
+		expect(user.name).toBe("Octo Cat");
 	});
 });
 ```
@@ -923,13 +961,12 @@ git commit -m "feat: GitHub identity adapter via arctic"
 `test/handlers.test.ts`:
 
 ```typescript
-import { env, fetchMock } from "cloudflare:test";
-import { createLocalJWKSet, jwtVerify } from "jose";
-import { afterEach, beforeAll, describe, expect, it } from "vitest";
+import { env } from "cloudflare:workers";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { githubRoutes, stubFetch } from "./helpers";
 import app from "../src/index";
 
-beforeAll(() => fetchMock.activate());
-afterEach(() => fetchMock.assertNoPendingInterceptors());
+afterEach(() => vi.unstubAllGlobals());
 
 function ctx() {
 	return { ...env, waitUntil() {}, passThroughOnException() {} } as unknown as ExecutionContext;
@@ -960,17 +997,10 @@ describe("auth routes", () => {
 	});
 
 	it("completes /callback: sets cookies and redirects back", async () => {
+		stubFetch(githubRoutes({ id: 7, login: "u", name: "U" }, "u@x.com"));
 		// Seed a valid state by calling /authorize first.
 		const authRes = await app.request("/authorize?redirect_uri=https://app1.yourdomain.com/cb", {}, env, ctx());
 		const state = new URL(authRes.headers.get("location")!).searchParams.get("state")!;
-
-		fetchMock.get("https://github.com").intercept({ path: /access_token/, method: "POST" })
-			.reply(200, { access_token: "gho", token_type: "bearer", scope: "user:email" },
-				{ headers: { "content-type": "application/json" } });
-		fetchMock.get("https://api.github.com").intercept({ path: "/user" })
-			.reply(200, { id: 7, login: "u", name: "U" });
-		fetchMock.get("https://api.github.com").intercept({ path: "/user/emails" })
-			.reply(200, [{ email: "u@x.com", primary: true, verified: true }]);
 
 		const res = await app.request(`/callback?code=c&state=${state}`, {}, env, ctx());
 		expect(res.status).toBe(302);
@@ -1324,14 +1354,14 @@ This test drives a full login through the worker, extracts the issued access tok
 `test/e2e.test.ts`:
 
 ```typescript
-import { env, fetchMock } from "cloudflare:test";
-import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { env } from "cloudflare:workers";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { requireUser } from "../packages/auth-verify/src/index";
 import { getPublicJwks } from "../src/keys";
 import app from "../src/index";
+import { githubRoutes, json, stubFetch } from "./helpers";
 
-beforeAll(() => fetchMock.activate());
-afterEach(() => fetchMock.assertNoPendingInterceptors());
+afterEach(() => vi.unstubAllGlobals());
 
 function ctx() {
 	return { ...env, waitUntil() {}, passThroughOnException() {} } as unknown as ExecutionContext;
@@ -1341,21 +1371,16 @@ const OPTS = { jwksUrl: "https://auth.yourdomain.com/.well-known/jwks.json", iss
 
 describe("end-to-end", () => {
 	it("logs in, then a resource worker accepts the token and rejects tampering", async () => {
-		// Point requireUser's JWKS fetch at the worker's real public keys.
+		// One stub serves both the GitHub OAuth calls and requireUser's JWKS fetch
+		// (pointed at the worker's real public keys).
 		const jwks = await getPublicJwks(env);
-		globalThis.fetch = vi.fn(async () =>
-			new Response(JSON.stringify(jwks), { headers: { "content-type": "application/json" } }),
-		) as unknown as typeof fetch;
+		stubFetch([
+			...githubRoutes({ id: 42, login: "u", name: "U" }, "u@x.com"),
+			{ match: (u) => u.includes("/.well-known/jwks.json"), respond: () => json(jwks) },
+		]);
 
 		const authRes = await app.request("/authorize?redirect_uri=https://app1.yourdomain.com/cb", {}, env, ctx());
 		const state = new URL(authRes.headers.get("location")!).searchParams.get("state")!;
-
-		fetchMock.get("https://github.com").intercept({ path: /access_token/, method: "POST" })
-			.reply(200, { access_token: "gho", token_type: "bearer", scope: "user:email" },
-				{ headers: { "content-type": "application/json" } });
-		fetchMock.get("https://api.github.com").intercept({ path: "/user" }).reply(200, { id: 42, login: "u", name: "U" });
-		fetchMock.get("https://api.github.com").intercept({ path: "/user/emails" })
-			.reply(200, [{ email: "u@x.com", primary: true, verified: true }]);
 
 		const cbRes = await app.request(`/callback?code=c&state=${state}`, {}, env, ctx());
 		const atCookie = cbRes.headers.getSetCookie().find((c) => c.startsWith("__Secure-fleet_at="))!;
