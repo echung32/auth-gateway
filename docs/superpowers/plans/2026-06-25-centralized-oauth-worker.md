@@ -1055,7 +1055,14 @@ export async function callback(c: Ctx): Promise<Response> {
 	}
 	if (!code) return c.text("missing code", 400);
 
-	const user = await exchangeGithubCode(c.env, code);
+	// A rejected/expired code makes arctic throw — that's a client/auth failure,
+	// so normalize to 401 rather than letting it surface as a 500.
+	let user;
+	try {
+		user = await exchangeGithubCode(c.env, code);
+	} catch {
+		return c.text("authentication failed", 401);
+	}
 	const access = await issueAccessToken(c.env, user);
 	const refresh = await issueRefreshToken(c.env, user.sub);
 
