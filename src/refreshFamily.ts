@@ -61,7 +61,8 @@ export class RefreshFamily extends DurableObject<Env> {
 				return { ok: false };
 			}
 
-			const claims = (await this.ctx.storage.get<UserClaims>("claims")) ?? { sub: "", email: null, name: null, scopes: [] };
+			const claims = await this.ctx.storage.get<UserClaims>("claims");
+			if (!claims) return { ok: false };
 			const next = await mintToken();
 			this.ctx.storage.sql.exec("INSERT INTO tokens (token_id, secret_hash) VALUES (?, ?)", next.tokenId, next.hash);
 			await this.ctx.storage.put("head", next.tokenId);

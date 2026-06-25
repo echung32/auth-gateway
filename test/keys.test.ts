@@ -28,4 +28,18 @@ describe("keys", () => {
 		expect(kids).toContain("prev-kid");
 		expect(jwks.keys).toHaveLength(2);
 	});
+
+	it("ignores malformed SIGNING_PUBLIC_JWKS and still serves the current key", async () => {
+		const envWith = { ...env, SIGNING_PUBLIC_JWKS: "not json" } as unknown as Env;
+		const jwks = await getPublicJwks(envWith);
+		expect(jwks.keys).toHaveLength(1);
+		expect(jwks.keys[0]).toMatchObject({ kid: "test-kid" });
+	});
+
+	it("does not duplicate the current key if it also appears in SIGNING_PUBLIC_JWKS", async () => {
+		const dup = { kty: "OKP", crv: "Ed25519", alg: "EdDSA", use: "sig", kid: "test-kid", x: "dummy" };
+		const envWith = { ...env, SIGNING_PUBLIC_JWKS: JSON.stringify([dup]) } as unknown as Env;
+		const jwks = await getPublicJwks(envWith);
+		expect(jwks.keys.filter((k) => k.kid === "test-kid")).toHaveLength(1);
+	});
 });
