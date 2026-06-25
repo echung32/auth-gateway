@@ -2,7 +2,7 @@ import { GitHub } from "arctic";
 import type { UserClaims } from "./types";
 
 const SCOPES = ["read:user", "user:email"];
-const UA = "oauth-worker";
+const UA = "auth-gateway";
 
 function client(env: Env): GitHub {
 	return new GitHub(env.GITHUB_CLIENT_ID, env.GITHUB_CLIENT_SECRET, env.GITHUB_REDIRECT_URI);

@@ -24,7 +24,7 @@
 
 ## File Structure
 
-**Auth worker (`oauth-worker` repo):**
+**Auth worker (`auth-gateway` repo):**
 - `src/index.ts` — Hono app, route registration (replaces the starter tasks example).
 - `src/config.ts` — non-secret config derived from `env` (issuer, audience, TTLs, cookie domain, allowlist).
 - `src/types.ts` — shared types (`UserClaims`).
@@ -900,7 +900,7 @@ import { GitHub } from "arctic";
 import type { UserClaims } from "./types";
 
 const SCOPES = ["read:user", "user:email"];
-const UA = "oauth-worker";
+const UA = "auth-gateway";
 
 function client(env: Env): GitHub {
 	return new GitHub(env.GITHUB_CLIENT_ID, env.GITHUB_CLIENT_SECRET, env.GITHUB_REDIRECT_URI);

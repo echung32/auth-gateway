@@ -1,4 +1,4 @@
-# oauth-worker
+# auth-gateway
 
 A centralized OAuth / authentication Cloudflare Worker for a fleet of apps on a shared apex domain. It delegates identity to GitHub (via [arctic](https://arcticjs.dev/)), issues short-lived EdDSA JWT access tokens and rotating refresh tokens (held in a per-family Durable Object for atomic rotation/theft-detection), sets `HttpOnly` cookies for browser SSO, and publishes a JWKS endpoint so resource workers can verify tokens offline without phoning home on every request.
 
@@ -191,7 +191,7 @@ GITHUB_CLIENT_SECRET=your_client_secret
 Browser / API client
        │
        ▼
-  oauth-worker  (this repo)
+  auth-gateway  (this repo)
   ┌──────────────────────────────────────────────┐
   │  /authorize  → GitHub OAuth redirect         │
   │  /callback   → exchange code, issue tokens   │
