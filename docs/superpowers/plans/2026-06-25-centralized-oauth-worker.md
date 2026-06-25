@@ -125,11 +125,30 @@ Expected: `worker-configuration.d.ts` now lists `AUTH_KV`, `ISSUER`, etc. on `in
 ```typescript
 import { defineWorkersConfig } from "@cloudflare/vitest-pool-workers/config";
 
+// A real, valid Ed25519 private JWK used only in tests. Secrets are not in
+// wrangler.jsonc, so the test harness supplies them via Miniflare bindings.
+const TEST_SIGNING_JWK = JSON.stringify({
+	crv: "Ed25519",
+	d: "-bdIb7MCMNo7Xb8SPNI0dAgIoxMpyEdVBJLEN_uXaRk",
+	x: "FxJI6vAKMXTSR84PL7fO4qK9J3zAyC_94XCdYasw4HU",
+	kty: "OKP",
+	alg: "EdDSA",
+	use: "sig",
+	kid: "test-kid",
+});
+
 export default defineWorkersConfig({
 	test: {
 		poolOptions: {
 			workers: {
 				wrangler: { configPath: "./wrangler.jsonc" },
+				miniflare: {
+					bindings: {
+						SIGNING_PRIVATE_JWK: TEST_SIGNING_JWK,
+						GITHUB_CLIENT_ID: "test-client-id",
+						GITHUB_CLIENT_SECRET: "test-client-secret",
+					},
+				},
 			},
 		},
 	},
@@ -270,35 +289,22 @@ node scripts/generate-keys.mjs
 
 - [ ] **Step 2: Write the failing keys test**
 
-`test/keys.test.ts` (uses an inline test key so it does not depend on secrets):
+`test/keys.test.ts` (reads the test signing key supplied by `vitest.config.ts`):
 
 ```typescript
+import { env } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 import { getPublicJwks, loadSigningKey } from "../src/keys";
 
-const TEST_JWK = {
-	kty: "OKP",
-	crv: "Ed25519",
-	alg: "EdDSA",
-	use: "sig",
-	kid: "test-kid",
-	d: "9Df9qZ8m0lY1bQ2c3xkq3a3Yp5oQmZc3o5p9q1r2sM",
-	x: "11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo",
-};
-
-function envWith(jwk: object): Env {
-	return { SIGNING_PRIVATE_JWK: JSON.stringify(jwk) } as unknown as Env;
-}
-
 describe("keys", () => {
 	it("loads the private key and exposes its kid", async () => {
-		const { key, kid } = await loadSigningKey(envWith(TEST_JWK));
+		const { key, kid } = await loadSigningKey(env);
 		expect(kid).toBe("test-kid");
 		expect(key).toBeDefined();
 	});
 
 	it("publishes a public JWKS without the private 'd' field", async () => {
-		const jwks = await getPublicJwks(envWith(TEST_JWK));
+		const jwks = await getPublicJwks(env);
 		expect(jwks.keys).toHaveLength(1);
 		expect(jwks.keys[0]).toMatchObject({ kid: "test-kid", alg: "EdDSA", use: "sig", crv: "Ed25519" });
 		expect(jwks.keys[0]).not.toHaveProperty("d");
@@ -366,23 +372,11 @@ git commit -m "feat: signing key loader, public JWKS, key-gen script"
 `test/tokens.test.ts` (verifies the issued JWT with `jose` against the public JWKS):
 
 ```typescript
+import { env } from "cloudflare:test";
 import { createLocalJWKSet, jwtVerify } from "jose";
 import { describe, expect, it } from "vitest";
 import { getPublicJwks } from "../src/keys";
 import { issueAccessToken } from "../src/tokens";
-
-const TEST_JWK = {
-	kty: "OKP", crv: "Ed25519", alg: "EdDSA", use: "sig", kid: "test-kid",
-	d: "9Df9qZ8m0lY1bQ2c3xkq3a3Yp5oQmZc3o5p9q1r2sM",
-	x: "11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo",
-};
-
-const env = {
-	SIGNING_PRIVATE_JWK: JSON.stringify(TEST_JWK),
-	ISSUER: "https://auth.yourdomain.com",
-	AUDIENCE: "fleet",
-	ACCESS_TTL_SEC: "900",
-} as unknown as Env;
 
 describe("issueAccessToken", () => {
 	it("mints a JWT that verifies against the public JWKS with correct claims", async () => {
@@ -391,8 +385,8 @@ describe("issueAccessToken", () => {
 		});
 		const jwks = createLocalJWKSet(await getPublicJwks(env) as any);
 		const { payload, protectedHeader } = await jwtVerify(token, jwks, {
-			issuer: "https://auth.yourdomain.com",
-			audience: "fleet",
+			issuer: env.ISSUER,
+			audience: env.AUDIENCE,
 		});
 		expect(protectedHeader.alg).toBe("EdDSA");
 		expect(protectedHeader.kid).toBe("test-kid");
