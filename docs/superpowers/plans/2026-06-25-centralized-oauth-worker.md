@@ -560,7 +560,10 @@ export async function rotateRefreshToken(
 		throw new Error("refresh token reuse detected");
 	}
 
-	await env.AUTH_KV.delete(`rt:${tokenId}`);
+	// Do NOT delete rt:${tokenId} here — keeping the old record is what makes
+	// theft detection work: if this rotated token is presented again, the
+	// fam: head will no longer match it and the whole family is revoked above.
+	// (Old records expire naturally via the refresh TTL.)
 	const refreshToken = await writeToken(env, record.userId, record.family);
 	return { userId: record.userId, refreshToken };
 }
