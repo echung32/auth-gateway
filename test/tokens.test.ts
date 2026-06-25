@@ -20,5 +20,9 @@ describe("issueAccessToken", () => {
 		expect(payload.email).toBe("a@b.com");
 		expect(payload.scopes).toEqual(["read"]);
 		expect(payload.jti).toBeDefined();
+		expect(payload.name).toBe("A B");
+		expect(typeof payload.iat).toBe("number");
+		expect(typeof payload.exp).toBe("number");
+		expect((payload.exp as number) - (payload.iat as number)).toBe(900);
 	});
 });

@@ -10,8 +10,8 @@ A centralized OAuth / authentication Cloudflare Worker for a fleet of apps on a 
 |--------|------|-------------|
 | `GET` | `/authorize` | Starts the GitHub OAuth flow. Accepts optional `redirect_uri` query param (must be in `REDIRECT_ALLOWLIST`). |
 | `GET` | `/callback` | GitHub redirects here after the user authorizes. Validates CSRF state, exchanges code for tokens, sets cookies, and redirects to `redirect_uri`. |
-| `POST` | `/token` | Refresh-token grant. Accepts `{ refresh_token }` JSON body; returns a new access token + rotated refresh token. Detects theft via single-use enforcement. |
-| `POST` | `/logout` | Revokes the refresh token in KV and clears cookies. |
+| `POST` | `/token` | Refresh-token grant. Reads the refresh token from the `__Secure-fleet_rt` cookie (no JSON body); on success returns `200` with refreshed `Set-Cookie` headers (no token in response body). Detects theft via single-use enforcement. Accepts credentialed CORS from allowlisted app origins. |
+| `POST` | `/logout` | Revokes the refresh token in KV and returns `204` with cleared cookies. Accepts credentialed CORS from allowlisted app origins. |
 | `GET` | `/.well-known/jwks.json` | Publishes the public EdDSA key(s) as a JWKS. Resource workers fetch this to verify tokens offline. |
 
 ---

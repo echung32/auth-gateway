@@ -1,13 +1,16 @@
 import { SignJWT, exportJWK, generateKeyPair } from "jose";
+import type { KeyLike } from "jose";
 import { beforeAll, describe, expect, it, vi } from "vitest";
 import { requireUser } from "../src/index";
 
 const OPTS = { jwksUrl: "https://auth.test/jwks", issuer: "https://auth.test", audience: "fleet" };
 let goodToken: string;
+let privateKey: KeyLike;
 
 beforeAll(async () => {
-	const { privateKey, publicKey } = await generateKeyPair("EdDSA", { crv: "Ed25519", extractable: true });
-	const pub = await exportJWK(publicKey);
+	const kp = await generateKeyPair("EdDSA", { crv: "Ed25519", extractable: true });
+	privateKey = kp.privateKey;
+	const pub = await exportJWK(kp.publicKey);
 	pub.kid = "k1"; pub.alg = "EdDSA"; pub.use = "sig";
 
 	globalThis.fetch = vi.fn(async () =>
@@ -19,6 +22,9 @@ beforeAll(async () => {
 		.setIssuer(OPTS.issuer).setAudience(OPTS.audience).setSubject("gh|1")
 		.setIssuedAt().setExpirationTime("15m").sign(privateKey);
 });
+
+const reqWith = (token: string) =>
+	new Request("https://app", { headers: { authorization: `Bearer ${token}` } });
 
 describe("requireUser", () => {
 	it("returns claims for a valid bearer token", async () => {
@@ -42,5 +48,29 @@ describe("requireUser", () => {
 		const req = new Request("https://app", { headers: { authorization: `Bearer ${goodToken}x` } });
 		await expect(requireUser(req, OPTS)).rejects.toBeInstanceOf(Response);
 		await expect(requireUser(req, OPTS)).rejects.toMatchObject({ status: 401 });
+	});
+
+	it("throws a 401 Response for an expired token", async () => {
+		const token = await new SignJWT({ email: "a@b.com", name: "A", scopes: ["read"] })
+			.setProtectedHeader({ alg: "EdDSA", kid: "k1" })
+			.setIssuer(OPTS.issuer).setAudience(OPTS.audience).setSubject("gh|1")
+			.setIssuedAt().setExpirationTime("-1m").sign(privateKey);
+		await expect(requireUser(reqWith(token), OPTS)).rejects.toBeInstanceOf(Response);
+	});
+
+	it("throws a 401 Response for an issuer mismatch", async () => {
+		const token = await new SignJWT({ email: "a@b.com", name: "A", scopes: ["read"] })
+			.setProtectedHeader({ alg: "EdDSA", kid: "k1" })
+			.setIssuer("https://evil").setAudience(OPTS.audience).setSubject("gh|1")
+			.setIssuedAt().setExpirationTime("15m").sign(privateKey);
+		await expect(requireUser(reqWith(token), OPTS)).rejects.toBeInstanceOf(Response);
+	});
+
+	it("throws a 401 Response for an audience mismatch", async () => {
+		const token = await new SignJWT({ email: "a@b.com", name: "A", scopes: ["read"] })
+			.setProtectedHeader({ alg: "EdDSA", kid: "k1" })
+			.setIssuer(OPTS.issuer).setAudience("other").setSubject("gh|1")
+			.setIssuedAt().setExpirationTime("15m").sign(privateKey);
+		await expect(requireUser(reqWith(token), OPTS)).rejects.toBeInstanceOf(Response);
 	});
 });

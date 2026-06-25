@@ -20,8 +20,14 @@ export async function exchangeGithubCode(env: Env, code: string): Promise<UserCl
 	const accessToken = tokens.accessToken();
 	const headers = { authorization: `Bearer ${accessToken}`, "user-agent": UA, accept: "application/vnd.github+json" };
 
-	const profile = (await (await fetch("https://api.github.com/user", { headers })).json()) as GithubUser;
-	const emails = (await (await fetch("https://api.github.com/user/emails", { headers })).json()) as GithubEmail[];
+	const profileRes = await fetch("https://api.github.com/user", { headers });
+	if (!profileRes.ok) throw new Error(`github /user ${profileRes.status}`);
+	const profile = (await profileRes.json()) as GithubUser;
+	if (typeof profile.id !== "number") throw new Error("github profile missing id");
+
+	const emailsRes = await fetch("https://api.github.com/user/emails", { headers });
+	if (!emailsRes.ok) throw new Error(`github /user/emails ${emailsRes.status}`);
+	const emails = (await emailsRes.json()) as GithubEmail[];
 	const primary = emails.find((e) => e.primary && e.verified) ?? null;
 
 	return {

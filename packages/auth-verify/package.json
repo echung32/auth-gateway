@@ -7,6 +7,7 @@
 	"exports": { ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js" } },
 	"files": ["dist"],
 	"scripts": {
+		"prepare": "tsup src/index.ts --format esm --dts",
 		"build": "tsup src/index.ts --format esm --dts",
 		"test": "vitest run"
 	},
