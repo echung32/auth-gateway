@@ -16,6 +16,7 @@ export async function loadSigningKey(env: Env): Promise<SigningKey> {
 }
 
 export async function getPublicJwks(env: Env): Promise<{ keys: Array<Record<string, unknown>> }> {
-	const { d, ...pub } = parsePrivateJwk(env) as Record<string, unknown>;
+	// Drop the private `d` component; everything else forms the public JWK.
+	const { d: _d, ...pub } = parsePrivateJwk(env) as unknown as Record<string, unknown>;
 	return { keys: [pub] };
 }
