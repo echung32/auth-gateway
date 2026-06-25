@@ -744,8 +744,9 @@ Expected: FAIL — cannot find module `../src/cookies`.
 - [ ] **Step 3: Implement `src/cookies.ts`**
 
 ```typescript
-import { getConfig } from "./config";
-
+// Cookies read only the env fields they need directly, rather than via
+// getConfig() — they have no use for the redirect allowlist, and getConfig
+// eagerly JSON.parses it. Max-Age accepts the string TTL values as-is.
 const ACCESS = "__Secure-fleet_at";
 const REFRESH = "__Secure-fleet_rt";
 
@@ -760,19 +761,16 @@ function readCookie(request: Request, name: string): string | null {
 }
 
 export function accessCookie(env: Env, token: string): string {
-	const cfg = getConfig(env);
-	return `${ACCESS}=${token}; Domain=${cfg.cookieDomain}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=${cfg.accessTtlSec}`;
+	return `${ACCESS}=${token}; Domain=${env.COOKIE_DOMAIN}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=${env.ACCESS_TTL_SEC}`;
 }
 
 export function refreshCookie(env: Env, token: string): string {
-	const cfg = getConfig(env);
-	return `${REFRESH}=${token}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=${cfg.refreshTtlSec}`;
+	return `${REFRESH}=${token}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=${env.REFRESH_TTL_SEC}`;
 }
 
 export function clearCookies(env: Env): string[] {
-	const cfg = getConfig(env);
 	return [
-		`${ACCESS}=; Domain=${cfg.cookieDomain}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=0`,
+		`${ACCESS}=; Domain=${env.COOKIE_DOMAIN}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=0`,
 		`${REFRESH}=; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=0`,
 	];
 }
