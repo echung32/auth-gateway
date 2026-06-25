@@ -1996,3 +1996,131 @@ Run: `pnpm test` (worker), `pnpm --filter auth-verify test` (package),
 git add -A
 git commit -m "fix: package prepare build, GitHub response validation, doc + test coverage"
 ```
+
+---
+
+## Task 15: Final-review fixes (refresh claims, JWKS rotation overlap, doc/test minors)
+
+From the final whole-branch review (user chose to implement key-rotation overlap).
+
+**Files:** `src/refreshFamily.ts`, `src/refresh.ts`, `src/handlers.ts`, `src/keys.ts`, `src/env.d.ts`, `test/refresh.test.ts`, `test/keys.test.ts`, `test/cors.test.ts`, `README.md`.
+
+### Part A — refresh preserves full identity claims
+
+- [ ] **A1: `src/refreshFamily.ts` — store/return full `UserClaims`** (not just `userId`).
+
+`import type { UserClaims } from "./types";` Then change `issue`/`rotate`:
+
+```typescript
+	async issue(claims: UserClaims, ttlSec: number): Promise<string> {
+		this.ensureSchema();
+		const { tokenId, secret, hash } = await mintToken();
+		this.ctx.storage.sql.exec("INSERT INTO tokens (token_id, secret_hash) VALUES (?, ?)", tokenId, hash);
+		await this.ctx.storage.put("claims", claims);
+		await this.ctx.storage.put("head", tokenId);
+		await this.ctx.storage.setAlarm(Date.now() + ttlSec * 1000);
+		return `${tokenId}.${secret}`;
+	}
+
+	async rotate(tokenId: string, secret: string, ttlSec: number): Promise<{ ok: true; claims: UserClaims; token: string } | { ok: false }> {
+		this.ensureSchema();
+		return this.ctx.blockConcurrencyWhile(async () => {
+			const hash = this.lookup(tokenId);
+			if (!hash) return { ok: false };
+			if ((await sha256(secret)) !== hash) return { ok: false };
+			const head = await this.ctx.storage.get<string>("head");
+			if (head !== tokenId) {
+				await this.ctx.storage.deleteAll();
+				return { ok: false };
+			}
+			const claims = (await this.ctx.storage.get<UserClaims>("claims")) ?? { sub: "", email: null, name: null, scopes: [] };
+			const next = await mintToken();
+			this.ctx.storage.sql.exec("INSERT INTO tokens (token_id, secret_hash) VALUES (?, ?)", next.tokenId, next.hash);
+			await this.ctx.storage.put("head", next.tokenId);
+			await this.ctx.storage.setAlarm(Date.now() + ttlSec * 1000);
+			return { ok: true, claims, token: `${next.tokenId}.${next.secret}` };
+		});
+	}
+```
+
+(`revoke`/`alarm`/`ensureSchema`/`lookup` unchanged.)
+
+- [ ] **A2: `src/refresh.ts`** — `import type { UserClaims } from "./types";`
+
+```typescript
+export async function issueRefreshToken(env: Env, user: UserClaims): Promise<string> {
+	const family = randomToken(16);
+	const token = await familyStub(env, family).issue(user, getConfig(env).refreshTtlSec);
+	return `${family}.${token}`;
+}
+
+export async function rotateRefreshToken(env: Env, presented: string): Promise<{ user: UserClaims; refreshToken: string }> {
+	const parsed = parseToken(presented);
+	if (!parsed) throw new Error("malformed refresh token");
+	const result = await familyStub(env, parsed.family).rotate(parsed.tokenId, parsed.secret, getConfig(env).refreshTtlSec);
+	if (!result.ok) throw new Error("invalid refresh token");
+	return { user: result.claims, refreshToken: `${parsed.family}.${result.token}` };
+}
+```
+
+(`revokeRefreshToken` unchanged.)
+
+- [ ] **A3: `src/handlers.ts`** — in `callback`: `const refresh = await issueRefreshToken(c.env, user);` (whole `user`). In `token`: replace the minimal-claims reissue with:
+
+```typescript
+		const { user, refreshToken } = await rotateRefreshToken(c.env, presented);
+		const access = await issueAccessToken(c.env, user);
+```
+
+- [ ] **A4: `test/refresh.test.ts`** — issue with a full `UserClaims` (`{ sub: "gh|1", email: "a@b.com", name: "A", scopes: ["read"] }`); after rotate, destructure `user` (not `userId`) and assert `expect(user).toEqual(theIssuedClaims)`. Keep all theft-detection/concurrency/malformed/revoke cases.
+
+### Part B — JWKS key-rotation overlap
+
+- [ ] **B1: `src/env.d.ts`** — add `SIGNING_PUBLIC_JWKS?: string;`
+
+- [ ] **B2: `src/keys.ts`**:
+
+```typescript
+export async function getPublicJwks(env: Env): Promise<{ keys: Array<Record<string, unknown>> }> {
+	const { d: _d, ...current } = parsePrivateJwk(env) as unknown as Record<string, unknown>;
+	const extra = env.SIGNING_PUBLIC_JWKS
+		? (JSON.parse(env.SIGNING_PUBLIC_JWKS) as Array<Record<string, unknown>>)
+		: [];
+	return { keys: [current, ...extra] };
+}
+```
+
+(Signing always uses the current `SIGNING_PRIVATE_JWK`. Rotation: put the OLD public JWK into `SIGNING_PUBLIC_JWKS`, switch the private key, remove the old entry after `ACCESS_TTL_SEC`.)
+
+- [ ] **B3: `test/keys.test.ts`** — add an overlap case using a CONSTRUCTED env (do NOT change global harness bindings; the handlers test asserts a single key):
+
+```typescript
+import { exportJWK, generateKeyPair } from "jose";
+// ...
+	it("publishes active + previous public keys when SIGNING_PUBLIC_JWKS is set", async () => {
+		const { publicKey } = await generateKeyPair("EdDSA", { crv: "Ed25519", extractable: true });
+		const prev = await exportJWK(publicKey);
+		prev.kid = "prev-kid"; prev.alg = "EdDSA"; prev.use = "sig";
+		const envWith = { ...env, SIGNING_PUBLIC_JWKS: JSON.stringify([prev]) } as unknown as Env;
+		const jwks = await getPublicJwks(envWith);
+		const kids = jwks.keys.map((k) => k.kid);
+		expect(kids).toContain("test-kid");
+		expect(kids).toContain("prev-kid");
+		expect(jwks.keys).toHaveLength(2);
+	});
+```
+
+### Part C — doc/test minors
+
+- [ ] **C1: `test/cors.test.ts`** — add `/logout` coverage mirroring the `/token` cases: preflight from an allowlisted origin → `204` with `Access-Control-Allow-Origin` = that origin and `Access-Control-Allow-Credentials: true`; `POST /logout` from an allowlisted origin carries those CORS headers.
+
+- [ ] **C2: `README.md`** — (a) `REDIRECT_ALLOWLIST` is an exact-**origin** allowlist (also reused for credentialed-CORS origins), not full redirect URLs; (b) `COOKIE_DOMAIN` applies to the **access** cookie `__Secure-fleet_at`; the refresh cookie `__Secure-fleet_rt` is **host-only** (no `Domain`).
+
+- [ ] **D: Verify + commit**
+
+`pnpm test` (worker, all pass + pristine: `grep -ciE "uncaught|SQLITE|missing required|warn"` → 0), `pnpm --filter auth-verify test`, `pnpm typecheck` clean.
+
+```bash
+git add -A
+git commit -m "fix: refresh preserves claims; JWKS rotation overlap; doc/test fixes"
+```
