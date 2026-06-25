@@ -18,10 +18,14 @@ export default defineConfig({
 		cloudflareTest({
 			wrangler: { configPath: "./wrangler.jsonc" },
 			miniflare: {
+				// Only true secrets need stubbing here; GITHUB_CLIENT_ID is a public
+				// var supplied via wrangler.jsonc. REDIRECT_ALLOWLIST is pinned to a
+				// fixed test value so the suite is independent of the production
+				// allowlist in wrangler.jsonc.
 				bindings: {
 					SIGNING_PRIVATE_JWK: TEST_SIGNING_JWK,
-					GITHUB_CLIENT_ID: "test-client-id",
 					GITHUB_CLIENT_SECRET: "test-client-secret",
+					REDIRECT_ALLOWLIST: '["https://app1.yourdomain.com","https://app2.yourdomain.com"]',
 				},
 			},
 		}),

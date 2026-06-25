@@ -6,6 +6,5 @@
 interface Env {
 	SIGNING_PRIVATE_JWK: string;
 	SIGNING_PUBLIC_JWKS?: string;
-	GITHUB_CLIENT_ID: string;
 	GITHUB_CLIENT_SECRET: string;
 }

@@ -24,12 +24,18 @@
 		{ "tag": "v1", "new_sqlite_classes": ["RefreshFamily"] }
 	],
 	"vars": {
-		"ISSUER": "https://auth.yourdomain.com",
+		"ISSUER": "https://auth.ethanchung.dev",
 		"AUDIENCE": "fleet",
-		"COOKIE_DOMAIN": ".yourdomain.com",
+		"COOKIE_DOMAIN": ".ethanchung.dev",
 		"ACCESS_TTL_SEC": "900",
 		"REFRESH_TTL_SEC": "2592000",
-		"REDIRECT_ALLOWLIST": "[\"https://app1.yourdomain.com\",\"https://app2.yourdomain.com\"]",
-		"GITHUB_REDIRECT_URI": "https://auth.yourdomain.com/callback"
-	}
+		"REDIRECT_ALLOWLIST": "[\"https://ccusage.ethanchung.dev\"]",
+		"GITHUB_REDIRECT_URI": "https://auth.ethanchung.dev/callback",
+		"GITHUB_CLIENT_ID": "Ov23liPyz25gwtayKH7R"
+	},
+	"routes": [
+		{ "pattern": "auth.ethanchung.dev", "custom_domain": true }
+	],
+	"workers_dev": false,
+	"preview_urls": false
 }
