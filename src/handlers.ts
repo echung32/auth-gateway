@@ -1,6 +1,7 @@
 import type { Context } from "hono";
 import { clearCookies, accessCookie, readRefreshToken, refreshCookie } from "./cookies";
 import { isAllowedRedirect } from "./config";
+import { corsHeaders } from "./cors";
 import { exchangeGithubCode, githubAuthUrl } from "./github";
 import { getPublicJwks } from "./keys";
 import { issueRefreshToken, rotateRefreshToken, revokeRefreshToken } from "./refresh";
@@ -42,23 +43,31 @@ export async function callback(c: Ctx): Promise<Response> {
 }
 
 export async function token(c: Ctx): Promise<Response> {
+	const cors = corsHeaders(c.env, c.req.raw);
 	const presented = readRefreshToken(c.req.raw);
-	if (!presented) return c.text("no refresh token", 401);
+	if (!presented) {
+		if (cors) for (const [k, v] of Object.entries(cors)) c.header(k, v, { append: true });
+		return c.text("no refresh token", 401);
+	}
 	try {
 		const { userId, refreshToken } = await rotateRefreshToken(c.env, presented);
 		const access = await issueAccessToken(c.env, { sub: userId, email: null, name: null, scopes: [] });
 		c.header("Set-Cookie", accessCookie(c.env, access), { append: true });
 		c.header("Set-Cookie", refreshCookie(c.env, refreshToken), { append: true });
+		if (cors) for (const [k, v] of Object.entries(cors)) c.header(k, v, { append: true });
 		return c.body(null, 200);
 	} catch {
+		if (cors) for (const [k, v] of Object.entries(cors)) c.header(k, v, { append: true });
 		return c.text("invalid refresh token", 401);
 	}
 }
 
 export async function logout(c: Ctx): Promise<Response> {
+	const cors = corsHeaders(c.env, c.req.raw);
 	const presented = readRefreshToken(c.req.raw);
 	if (presented) await revokeRefreshToken(c.env, presented);
 	for (const cookie of clearCookies(c.env)) c.header("Set-Cookie", cookie, { append: true });
+	if (cors) for (const [k, v] of Object.entries(cors)) c.header(k, v, { append: true });
 	return c.body(null, 204);
 }
 
