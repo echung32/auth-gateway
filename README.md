@@ -41,7 +41,7 @@ pnpm wrangler kv namespace create AUTH_KV
 
 ### Secrets
 
-Declared in `wrangler.jsonc` under `secrets.required`. Set them via `wrangler secret put` (see Deploy below):
+Typed in `src/env.d.ts` (they aren't in `wrangler.jsonc`, since secrets must never be committed there). Set them via `wrangler secret put` before deploying (see Deploy below); in tests they're supplied by `vitest.config.ts`:
 
 | Secret | Description |
 |--------|-------------|

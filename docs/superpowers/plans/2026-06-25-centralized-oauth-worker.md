@@ -106,13 +106,10 @@ Add these keys inside the top-level object (replace the all-commented bindings s
 		"REFRESH_TTL_SEC": "2592000",
 		"REDIRECT_ALLOWLIST": "[\"https://app1.yourdomain.com\",\"https://app2.yourdomain.com\"]",
 		"GITHUB_REDIRECT_URI": "https://auth.yourdomain.com/callback"
-	},
-	"secrets": {
-		"required": ["SIGNING_PRIVATE_JWK", "GITHUB_CLIENT_ID", "GITHUB_CLIENT_SECRET"]
 	}
 ```
 
-> `secrets.required` declares the Worker secrets so `wrangler types` emits them on the `Env` type (as `string`) — durable across regeneration. Provide the actual secret values with `wrangler secret put` at deploy time (deferred).
+> **Secret typing (resolved during execution):** secrets are NOT in `wrangler.jsonc`. They are typed via an ambient `src/env.d.ts` that declaration-merges `SIGNING_PRIVATE_JWK`, `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET` (all `string`) onto `Env` — durable across `wrangler types`. (An earlier attempt used wrangler's `secrets.required`, but that prints a "Missing required secrets" warning on every test-worker startup, breaking pristine test output.) Provide actual values with `wrangler secret put` at deploy time (deferred); tests supply them via `vitest.config.ts`. The repo also has a `pnpm typecheck` (`tsc --noEmit`) script — there is no typecheck in the test path, so run it to catch type errors.
 
 Create the KV namespace and paste its id over `REPLACE_WITH_KV_ID`:
 
