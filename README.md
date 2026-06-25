@@ -1,6 +1,6 @@
 # oauth-worker
 
-A centralized OAuth / authentication Cloudflare Worker for a fleet of apps on a shared apex domain. It delegates identity to GitHub (via [arctic](https://arcticjs.dev/)), issues short-lived EdDSA JWT access tokens and rotating refresh tokens (stored in KV), sets `HttpOnly` cookies for browser SSO, and publishes a JWKS endpoint so resource workers can verify tokens offline without phoning home on every request.
+A centralized OAuth / authentication Cloudflare Worker for a fleet of apps on a shared apex domain. It delegates identity to GitHub (via [arctic](https://arcticjs.dev/)), issues short-lived EdDSA JWT access tokens and rotating refresh tokens (held in a per-family Durable Object for atomic rotation/theft-detection), sets `HttpOnly` cookies for browser SSO, and publishes a JWKS endpoint so resource workers can verify tokens offline without phoning home on every request.
 
 ---
 
@@ -10,8 +10,8 @@ A centralized OAuth / authentication Cloudflare Worker for a fleet of apps on a 
 |--------|------|-------------|
 | `GET` | `/authorize` | Starts the GitHub OAuth flow. Accepts optional `redirect_uri` query param (must be in `REDIRECT_ALLOWLIST`). |
 | `GET` | `/callback` | GitHub redirects here after the user authorizes. Validates CSRF state, exchanges code for tokens, sets cookies, and redirects to `redirect_uri`. |
-| `POST` | `/token` | Refresh-token grant. Reads the refresh token from the `__Secure-fleet_rt` cookie (no JSON body); on success returns `200` with refreshed `Set-Cookie` headers (no token in response body). Detects theft via single-use enforcement. Accepts credentialed CORS from allowlisted app origins. |
-| `POST` | `/logout` | Revokes the refresh token in KV and returns `204` with cleared cookies. Accepts credentialed CORS from allowlisted app origins. |
+| `POST` | `/token` | Refresh-token grant. Reads the refresh token from the `__Secure-fleet_rt` cookie (no JSON body); on success returns `200` with refreshed `Set-Cookie` headers (no token in response body). Rotation + theft-detection are atomic in the `RefreshFamily` Durable Object. Accepts credentialed CORS from allowlisted app origins. |
+| `POST` | `/logout` | Revokes the refresh-token family (via the `RefreshFamily` Durable Object) and returns `204` with cleared cookies. Accepts credentialed CORS from allowlisted app origins. |
 | `GET` | `/.well-known/jwks.json` | Publishes the public EdDSA key(s) as a JWKS. Resource workers fetch this to verify tokens offline. |
 
 ---
@@ -32,12 +32,16 @@ A centralized OAuth / authentication Cloudflare Worker for a fleet of apps on a 
 
 ### `AUTH_KV` — KV namespace
 
-Refresh tokens and CSRF state are stored here. Create the namespace and paste the ID into `wrangler.jsonc`:
+Single-use OAuth CSRF `state` is stored here (short TTL). Refresh tokens are **not** in KV — they live in the `RefreshFamily` Durable Object. Create the namespace and paste the ID into `wrangler.jsonc`:
 
 ```bash
 pnpm wrangler kv namespace create AUTH_KV
 # copy the printed id into wrangler.jsonc → kv_namespaces[0].id
 ```
+
+### `RefreshFamily` — Durable Object
+
+Refresh-token families are stored in a SQLite-backed Durable Object (`durable_objects.bindings` → `REFRESH_FAMILY`, with a `new_sqlite_classes` migration in `wrangler.jsonc`). A DO instance is single-threaded, so rotation and theft-detection are atomic. No setup beyond the binding + migration (already in `wrangler.jsonc`); `wrangler deploy` provisions it.
 
 ### Secrets
 
@@ -149,7 +153,7 @@ https://auth.yourdomain.com/authorize?redirect_uri=<self>
 pnpm test
 ```
 
-Runs the Vitest worker pool suite (9 test files, 27 tests). GitHub OAuth is stubbed — no real credentials needed.
+Runs the Vitest worker pool suite (GitHub OAuth is stubbed — no real credentials needed). The `auth-verify` package has its own separate suite (below). Run `pnpm typecheck` for `tsc --noEmit`.
 
 ### auth-verify package tests
 
@@ -195,7 +199,8 @@ Browser / API client
   │  /logout     → revoke + clear cookies        │
   │  /.well-known/jwks.json  → public JWKS       │
   │                                              │
-  │  AUTH_KV: refresh tokens + CSRF state        │
+  │  AUTH_KV: single-use CSRF state              │
+  │  RefreshFamily DO: rotating refresh tokens   │
   │  SIGNING_PRIVATE_JWK: EdDSA private key      │
   └──────────────────────────────────────────────┘
        │ sets __Secure-fleet_at cookie (JWT)

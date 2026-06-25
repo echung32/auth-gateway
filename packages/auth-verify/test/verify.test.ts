@@ -56,6 +56,7 @@ describe("requireUser", () => {
 			.setIssuer(OPTS.issuer).setAudience(OPTS.audience).setSubject("gh|1")
 			.setIssuedAt().setExpirationTime("-1m").sign(privateKey);
 		await expect(requireUser(reqWith(token), OPTS)).rejects.toBeInstanceOf(Response);
+		await expect(requireUser(reqWith(token), OPTS)).rejects.toMatchObject({ status: 401 });
 	});
 
 	it("throws a 401 Response for an issuer mismatch", async () => {
@@ -64,6 +65,7 @@ describe("requireUser", () => {
 			.setIssuer("https://evil").setAudience(OPTS.audience).setSubject("gh|1")
 			.setIssuedAt().setExpirationTime("15m").sign(privateKey);
 		await expect(requireUser(reqWith(token), OPTS)).rejects.toBeInstanceOf(Response);
+		await expect(requireUser(reqWith(token), OPTS)).rejects.toMatchObject({ status: 401 });
 	});
 
 	it("throws a 401 Response for an audience mismatch", async () => {
@@ -72,5 +74,6 @@ describe("requireUser", () => {
 			.setIssuer(OPTS.issuer).setAudience("other").setSubject("gh|1")
 			.setIssuedAt().setExpirationTime("15m").sign(privateKey);
 		await expect(requireUser(reqWith(token), OPTS)).rejects.toBeInstanceOf(Response);
+		await expect(requireUser(reqWith(token), OPTS)).rejects.toMatchObject({ status: 401 });
 	});
 });
