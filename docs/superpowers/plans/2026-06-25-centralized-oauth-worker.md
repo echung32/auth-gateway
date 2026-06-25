@@ -106,8 +106,13 @@ Add these keys inside the top-level object (replace the all-commented bindings s
 		"REFRESH_TTL_SEC": "2592000",
 		"REDIRECT_ALLOWLIST": "[\"https://app1.yourdomain.com\",\"https://app2.yourdomain.com\"]",
 		"GITHUB_REDIRECT_URI": "https://auth.yourdomain.com/callback"
+	},
+	"secrets": {
+		"required": ["SIGNING_PRIVATE_JWK", "GITHUB_CLIENT_ID", "GITHUB_CLIENT_SECRET"]
 	}
 ```
+
+> `secrets.required` declares the Worker secrets so `wrangler types` emits them on the `Env` type (as `string`) — durable across regeneration. Provide the actual secret values with `wrangler secret put` at deploy time (deferred).
 
 Create the KV namespace and paste its id over `REPLACE_WITH_KV_ID`:
 
