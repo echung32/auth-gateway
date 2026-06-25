@@ -28,4 +28,15 @@ describe("refresh tokens", () => {
 		await revokeRefreshToken(env, t1);
 		await expect(rotateRefreshToken(env, t1)).rejects.toThrow();
 	});
+
+	it("revoke with a wrong secret does not invalidate the real token", async () => {
+		const t1 = await issueRefreshToken(env, "gh|4");
+		await revokeRefreshToken(env, t1.split(".")[0] + ".wrong");
+		await expect(rotateRefreshToken(env, t1)).resolves.toBeDefined();
+	});
+
+	it("rotate rejects a token with extra segments", async () => {
+		const t1 = await issueRefreshToken(env, "gh|5");
+		await expect(rotateRefreshToken(env, t1 + ".junk")).rejects.toThrow();
+	});
 });

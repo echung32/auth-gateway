@@ -30,12 +30,19 @@ export async function issueRefreshToken(env: Env, userId: string): Promise<strin
 	return writeToken(env, userId, randomToken(16));
 }
 
+function parseToken(presented: string): { tokenId: string; secret: string } | null {
+	const parts = presented.split(".");
+	if (parts.length !== 2 || !parts[0] || !parts[1]) return null;
+	return { tokenId: parts[0], secret: parts[1] };
+}
+
 export async function rotateRefreshToken(
 	env: Env,
 	presented: string,
 ): Promise<{ userId: string; refreshToken: string }> {
-	const [tokenId, secret] = presented.split(".");
-	if (!tokenId || !secret) throw new Error("malformed refresh token");
+	const parsed = parseToken(presented);
+	if (!parsed) throw new Error("malformed refresh token");
+	const { tokenId, secret } = parsed;
 
 	const raw = await env.AUTH_KV.get(`rt:${tokenId}`);
 	if (!raw) throw new Error("unknown refresh token");
@@ -59,12 +66,13 @@ export async function rotateRefreshToken(
 }
 
 export async function revokeRefreshToken(env: Env, presented: string): Promise<void> {
-	const [tokenId] = presented.split(".");
-	if (!tokenId) return;
+	const parsed = parseToken(presented);
+	if (!parsed) return;
+	const { tokenId, secret } = parsed;
 	const raw = await env.AUTH_KV.get(`rt:${tokenId}`);
-	if (raw) {
-		const record = JSON.parse(raw) as RefreshRecord;
-		await env.AUTH_KV.delete(`fam:${record.family}`);
-	}
+	if (!raw) return;
+	const record = JSON.parse(raw) as RefreshRecord;
+	if ((await sha256(secret)) !== record.secretHash) return;
+	await env.AUTH_KV.delete(`fam:${record.family}`);
 	await env.AUTH_KV.delete(`rt:${tokenId}`);
 }
