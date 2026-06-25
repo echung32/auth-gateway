@@ -10,6 +10,10 @@ interface __BaseEnv_Env {
 	REFRESH_TTL_SEC: "2592000";
 	REDIRECT_ALLOWLIST: "[\"https://app1.yourdomain.com\",\"https://app2.yourdomain.com\"]";
 	GITHUB_REDIRECT_URI: "https://auth.yourdomain.com/callback";
+	// Secrets (not in wrangler.jsonc vars — provisioned via `wrangler secret put`)
+	SIGNING_PRIVATE_JWK: string;
+	GITHUB_CLIENT_ID: string;
+	GITHUB_CLIENT_SECRET: string;
 }
 declare namespace Cloudflare {
 	interface GlobalProps {
