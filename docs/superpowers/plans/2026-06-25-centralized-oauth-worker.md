@@ -160,6 +160,8 @@ export default defineWorkersConfig({
 });
 ```
 
+> **Toolchain note (discovered during execution):** the installed `@cloudflare/vitest-pool-workers` (v0.16, Vitest 4) removed the `/config` subpath. The real config uses the `cloudflareTest()` plugin instead — see the actual `vitest.config.ts` in the repo. It also adds `test.exclude: [...configDefaults.exclude, "packages/**"]` so the root worker suite doesn't collect the `auth-verify` package's node-env tests (the package is tested by its own config).
+
 - [ ] **Step 6: Add the test script to `package.json`**
 
 Add to `"scripts"`: `"test": "vitest run"`.
