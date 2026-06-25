@@ -21,6 +21,9 @@ async function mintToken(): Promise<MintedToken> {
 export class RefreshFamily extends DurableObject<Env> {
 	constructor(ctx: DurableObjectState, env: Env) {
 		super(ctx, env);
+	}
+
+	private ensureSchema(): void {
 		this.ctx.storage.sql.exec(
 			"CREATE TABLE IF NOT EXISTS tokens (token_id TEXT PRIMARY KEY, secret_hash TEXT NOT NULL)",
 		);
@@ -34,6 +37,7 @@ export class RefreshFamily extends DurableObject<Env> {
 	}
 
 	async issue(userId: string, ttlSec: number): Promise<string> {
+		this.ensureSchema();
 		const { tokenId, secret, hash } = await mintToken();
 		this.ctx.storage.sql.exec("INSERT INTO tokens (token_id, secret_hash) VALUES (?, ?)", tokenId, hash);
 		await this.ctx.storage.put("userId", userId);
@@ -42,27 +46,30 @@ export class RefreshFamily extends DurableObject<Env> {
 		return `${tokenId}.${secret}`;
 	}
 
-	async rotate(tokenId: string, secret: string, ttlSec: number): Promise<{ userId: string; token: string }> {
+	async rotate(tokenId: string, secret: string, ttlSec: number): Promise<{ ok: true; userId: string; token: string } | { ok: false }> {
+		this.ensureSchema();
 		const hash = this.lookup(tokenId);
-		if (!hash) throw new Error("unknown refresh token");
-		if ((await sha256(secret)) !== hash) throw new Error("bad refresh secret");
+		if (!hash) return { ok: false };
+		if ((await sha256(secret)) !== hash) return { ok: false };
 
 		const head = await this.ctx.storage.get<string>("head");
 		if (head !== tokenId) {
 			// Reuse of an already-rotated token → revoke the entire family.
 			await this.ctx.storage.deleteAll();
-			throw new Error("refresh token reuse detected");
+			return { ok: false };
 		}
 
 		const userId = (await this.ctx.storage.get<string>("userId")) ?? "";
 		const next = await mintToken();
+		this.ensureSchema();
 		this.ctx.storage.sql.exec("INSERT INTO tokens (token_id, secret_hash) VALUES (?, ?)", next.tokenId, next.hash);
 		await this.ctx.storage.put("head", next.tokenId);
 		await this.ctx.storage.setAlarm(Date.now() + ttlSec * 1000);
-		return { userId, token: `${next.tokenId}.${next.secret}` };
+		return { ok: true, userId, token: `${next.tokenId}.${next.secret}` };
 	}
 
 	async revoke(tokenId: string, secret: string): Promise<void> {
+		this.ensureSchema();
 		const hash = this.lookup(tokenId);
 		if (!hash) return;
 		if ((await sha256(secret)) !== hash) return;

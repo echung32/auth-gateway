@@ -31,12 +31,9 @@ export async function rotateRefreshToken(
 ): Promise<{ userId: string; refreshToken: string }> {
 	const parsed = parseToken(presented);
 	if (!parsed) throw new Error("malformed refresh token");
-	const { userId, token } = await familyStub(env, parsed.family).rotate(
-		parsed.tokenId,
-		parsed.secret,
-		getConfig(env).refreshTtlSec,
-	);
-	return { userId, refreshToken: `${parsed.family}.${token}` };
+	const result = await familyStub(env, parsed.family).rotate(parsed.tokenId, parsed.secret, getConfig(env).refreshTtlSec);
+	if (!result.ok) throw new Error("invalid refresh token");
+	return { userId: result.userId, refreshToken: `${parsed.family}.${result.token}` };
 }
 
 export async function revokeRefreshToken(env: Env, presented: string): Promise<void> {
