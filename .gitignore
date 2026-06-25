@@ -165,3 +165,6 @@ dist
 .env*
 !.env.example
 .wrangler/
+
+# subagent-driven-development scratch
+.superpowers/

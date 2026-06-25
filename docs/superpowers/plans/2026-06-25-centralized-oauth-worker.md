@@ -24,7 +24,7 @@
 
 ## File Structure
 
-**Auth worker (`oauth-worker` repo):**
+**Auth worker (`auth-gateway` repo):**
 - `src/index.ts` — Hono app, route registration (replaces the starter tasks example).
 - `src/config.ts` — non-secret config derived from `env` (issuer, audience, TTLs, cookie domain, allowlist).
 - `src/types.ts` — shared types (`UserClaims`).
@@ -109,6 +109,8 @@ Add these keys inside the top-level object (replace the all-commented bindings s
 	}
 ```
 
+> **Secret typing (resolved during execution):** secrets are NOT in `wrangler.jsonc`. They are typed via an ambient `src/env.d.ts` that declaration-merges `SIGNING_PRIVATE_JWK`, `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET` (all `string`) onto `Env` — durable across `wrangler types`. (An earlier attempt used wrangler's `secrets.required`, but that prints a "Missing required secrets" warning on every test-worker startup, breaking pristine test output.) Provide actual values with `wrangler secret put` at deploy time (deferred); tests supply them via `vitest.config.ts`. The repo also has a `pnpm typecheck` (`tsc --noEmit`) script — there is no typecheck in the test path, so run it to catch type errors.
+
 Create the KV namespace and paste its id over `REPLACE_WITH_KV_ID`:
 
 ```bash
@@ -125,16 +127,37 @@ Expected: `worker-configuration.d.ts` now lists `AUTH_KV`, `ISSUER`, etc. on `in
 ```typescript
 import { defineWorkersConfig } from "@cloudflare/vitest-pool-workers/config";
 
+// A real, valid Ed25519 private JWK used only in tests. Secrets are not in
+// wrangler.jsonc, so the test harness supplies them via Miniflare bindings.
+const TEST_SIGNING_JWK = JSON.stringify({
+	crv: "Ed25519",
+	d: "-bdIb7MCMNo7Xb8SPNI0dAgIoxMpyEdVBJLEN_uXaRk",
+	x: "FxJI6vAKMXTSR84PL7fO4qK9J3zAyC_94XCdYasw4HU",
+	kty: "OKP",
+	alg: "EdDSA",
+	use: "sig",
+	kid: "test-kid",
+});
+
 export default defineWorkersConfig({
 	test: {
 		poolOptions: {
 			workers: {
 				wrangler: { configPath: "./wrangler.jsonc" },
+				miniflare: {
+					bindings: {
+						SIGNING_PRIVATE_JWK: TEST_SIGNING_JWK,
+						GITHUB_CLIENT_ID: "test-client-id",
+						GITHUB_CLIENT_SECRET: "test-client-secret",
+					},
+				},
 			},
 		},
 	},
 });
 ```
+
+> **Toolchain note (discovered during execution):** the installed `@cloudflare/vitest-pool-workers` (v0.16, Vitest 4) removed the `/config` subpath. The real config uses the `cloudflareTest()` plugin instead — see the actual `vitest.config.ts` in the repo. It also adds `test.exclude: [...configDefaults.exclude, "packages/**"]` so the root worker suite doesn't collect the `auth-verify` package's node-env tests (the package is tested by its own config).
 
 - [ ] **Step 6: Add the test script to `package.json`**
 
@@ -145,7 +168,7 @@ Add to `"scripts"`: `"test": "vitest run"`.
 Create `test/config.test.ts`:
 
 ```typescript
-import { env } from "cloudflare:test";
+import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 import { getConfig, isAllowedRedirect } from "../src/config";
 
@@ -270,35 +293,22 @@ node scripts/generate-keys.mjs
 
 - [ ] **Step 2: Write the failing keys test**
 
-`test/keys.test.ts` (uses an inline test key so it does not depend on secrets):
+`test/keys.test.ts` (reads the test signing key supplied by `vitest.config.ts`):
 
 ```typescript
+import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 import { getPublicJwks, loadSigningKey } from "../src/keys";
 
-const TEST_JWK = {
-	kty: "OKP",
-	crv: "Ed25519",
-	alg: "EdDSA",
-	use: "sig",
-	kid: "test-kid",
-	d: "9Df9qZ8m0lY1bQ2c3xkq3a3Yp5oQmZc3o5p9q1r2sM",
-	x: "11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo",
-};
-
-function envWith(jwk: object): Env {
-	return { SIGNING_PRIVATE_JWK: JSON.stringify(jwk) } as unknown as Env;
-}
-
 describe("keys", () => {
 	it("loads the private key and exposes its kid", async () => {
-		const { key, kid } = await loadSigningKey(envWith(TEST_JWK));
+		const { key, kid } = await loadSigningKey(env);
 		expect(kid).toBe("test-kid");
 		expect(key).toBeDefined();
 	});
 
 	it("publishes a public JWKS without the private 'd' field", async () => {
-		const jwks = await getPublicJwks(envWith(TEST_JWK));
+		const jwks = await getPublicJwks(env);
 		expect(jwks.keys).toHaveLength(1);
 		expect(jwks.keys[0]).toMatchObject({ kid: "test-kid", alg: "EdDSA", use: "sig", crv: "Ed25519" });
 		expect(jwks.keys[0]).not.toHaveProperty("d");
@@ -366,23 +376,11 @@ git commit -m "feat: signing key loader, public JWKS, key-gen script"
 `test/tokens.test.ts` (verifies the issued JWT with `jose` against the public JWKS):
 
 ```typescript
+import { env } from "cloudflare:workers";
 import { createLocalJWKSet, jwtVerify } from "jose";
 import { describe, expect, it } from "vitest";
 import { getPublicJwks } from "../src/keys";
 import { issueAccessToken } from "../src/tokens";
-
-const TEST_JWK = {
-	kty: "OKP", crv: "Ed25519", alg: "EdDSA", use: "sig", kid: "test-kid",
-	d: "9Df9qZ8m0lY1bQ2c3xkq3a3Yp5oQmZc3o5p9q1r2sM",
-	x: "11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo",
-};
-
-const env = {
-	SIGNING_PRIVATE_JWK: JSON.stringify(TEST_JWK),
-	ISSUER: "https://auth.yourdomain.com",
-	AUDIENCE: "fleet",
-	ACCESS_TTL_SEC: "900",
-} as unknown as Env;
 
 describe("issueAccessToken", () => {
 	it("mints a JWT that verifies against the public JWKS with correct claims", async () => {
@@ -391,8 +389,8 @@ describe("issueAccessToken", () => {
 		});
 		const jwks = createLocalJWKSet(await getPublicJwks(env) as any);
 		const { payload, protectedHeader } = await jwtVerify(token, jwks, {
-			issuer: "https://auth.yourdomain.com",
-			audience: "fleet",
+			issuer: env.ISSUER,
+			audience: env.AUDIENCE,
 		});
 		expect(protectedHeader.alg).toBe("EdDSA");
 		expect(protectedHeader.kid).toBe("test-kid");
@@ -467,7 +465,7 @@ Storage model: `rt:<tokenId>` → `{ userId, secretHash, family }`; `fam:<family
 `test/refresh.test.ts`:
 
 ```typescript
-import { env } from "cloudflare:test";
+import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 import { issueRefreshToken, revokeRefreshToken, rotateRefreshToken } from "../src/refresh";
 
@@ -561,7 +559,10 @@ export async function rotateRefreshToken(
 		throw new Error("refresh token reuse detected");
 	}
 
-	await env.AUTH_KV.delete(`rt:${tokenId}`);
+	// Do NOT delete rt:${tokenId} here — keeping the old record is what makes
+	// theft detection work: if this rotated token is presented again, the
+	// fam: head will no longer match it and the whole family is revoked above.
+	// (Old records expire naturally via the refresh TTL.)
 	const refreshToken = await writeToken(env, record.userId, record.family);
 	return { userId: record.userId, refreshToken };
 }
@@ -609,7 +610,7 @@ git commit -m "feat: rotating refresh tokens with theft detection in KV"
 `test/state.test.ts`:
 
 ```typescript
-import { env } from "cloudflare:test";
+import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 import { consumeState, createState } from "../src/state";
 
@@ -742,8 +743,9 @@ Expected: FAIL — cannot find module `../src/cookies`.
 - [ ] **Step 3: Implement `src/cookies.ts`**
 
 ```typescript
-import { getConfig } from "./config";
-
+// Cookies read only the env fields they need directly, rather than via
+// getConfig() — they have no use for the redirect allowlist, and getConfig
+// eagerly JSON.parses it. Max-Age accepts the string TTL values as-is.
 const ACCESS = "__Secure-fleet_at";
 const REFRESH = "__Secure-fleet_rt";
 
@@ -758,19 +760,16 @@ function readCookie(request: Request, name: string): string | null {
 }
 
 export function accessCookie(env: Env, token: string): string {
-	const cfg = getConfig(env);
-	return `${ACCESS}=${token}; Domain=${cfg.cookieDomain}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=${cfg.accessTtlSec}`;
+	return `${ACCESS}=${token}; Domain=${env.COOKIE_DOMAIN}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=${env.ACCESS_TTL_SEC}`;
 }
 
 export function refreshCookie(env: Env, token: string): string {
-	const cfg = getConfig(env);
-	return `${REFRESH}=${token}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=${cfg.refreshTtlSec}`;
+	return `${REFRESH}=${token}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=${env.REFRESH_TTL_SEC}`;
 }
 
 export function clearCookies(env: Env): string[] {
-	const cfg = getConfig(env);
 	return [
-		`${ACCESS}=; Domain=${cfg.cookieDomain}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=0`,
+		`${ACCESS}=; Domain=${env.COOKIE_DOMAIN}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=0`,
 		`${REFRESH}=; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=0`,
 	];
 }
@@ -804,6 +803,7 @@ git commit -m "feat: cookie builders and token readers"
 
 **Files:**
 - Create: `src/github.ts`
+- Create: `test/helpers.ts` (shared fetch-stub helper, reused by Tasks 8 and 10)
 - Test: `test/github.test.ts`
 
 **Interfaces:**
@@ -814,17 +814,62 @@ git commit -m "feat: cookie builders and token readers"
 
 `exchangeGithubCode` uses `arctic` to swap the code for a GitHub access token, then fetches `https://api.github.com/user` and `https://api.github.com/user/emails` (a `User-Agent` header is required by GitHub), returning a normalized `UserClaims` with `sub = "gh|<id>"` and the primary verified email.
 
-- [ ] **Step 1: Write the failing GitHub test (outbound calls stubbed with `fetchMock`)**
+> **Note on outbound-fetch mocking:** this project uses `@cloudflare/vitest-pool-workers` v0.16 (Vitest 4), where the old `fetchMock` export from `cloudflare:test` **was removed**. The supported approach is to mock `globalThis.fetch` directly. Tasks 7, 8, and 10 share one small test helper for that.
+
+- [ ] **Step 1a: Create the shared fetch-stub helper**
+
+`test/helpers.ts`:
+
+```typescript
+import { vi } from "vitest";
+
+export interface Route {
+	match: (url: string, method: string) => boolean;
+	respond: () => Response;
+}
+
+export function json(body: unknown, status = 200): Response {
+	return new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
+}
+
+/** Replace globalThis.fetch with a router over the given routes. Call vi.unstubAllGlobals() in afterEach. */
+export function stubFetch(routes: Route[]): void {
+	vi.stubGlobal(
+		"fetch",
+		vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+			const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+			const method = (init?.method ?? (input instanceof Request ? input.method : "GET")).toUpperCase();
+			for (const r of routes) if (r.match(url, method)) return r.respond();
+			throw new Error(`unexpected fetch: ${method} ${url}`);
+		}),
+	);
+}
+
+/** Routes that emulate the GitHub OAuth token exchange + profile + emails calls. */
+export function githubRoutes(profile: { id: number; login: string; name: string | null }, email: string): Route[] {
+	return [
+		{
+			match: (u, m) => u.includes("github.com/login/oauth/access_token") && m === "POST",
+			respond: () => json({ access_token: "gho", token_type: "bearer", scope: "user:email" }),
+		},
+		// /user/emails MUST be matched before /user (both contain "api.github.com/user").
+		{ match: (u) => u.includes("api.github.com/user/emails"), respond: () => json([{ email, primary: true, verified: true }]) },
+		{ match: (u) => u.includes("api.github.com/user"), respond: () => json(profile) },
+	];
+}
+```
+
+- [ ] **Step 1b: Write the failing GitHub test**
 
 `test/github.test.ts`:
 
 ```typescript
-import { env, fetchMock } from "cloudflare:test";
-import { afterEach, beforeAll, describe, expect, it } from "vitest";
+import { env } from "cloudflare:workers";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { exchangeGithubCode, githubAuthUrl } from "../src/github";
+import { githubRoutes, stubFetch } from "./helpers";
 
-beforeAll(() => fetchMock.activate());
-afterEach(() => fetchMock.assertNoPendingInterceptors());
+afterEach(() => vi.unstubAllGlobals());
 
 describe("github adapter", () => {
 	it("builds an authorization url carrying the state", () => {
@@ -833,20 +878,12 @@ describe("github adapter", () => {
 		expect(url.searchParams.get("state")).toBe("the-state");
 	});
 
-	it("exchanges a code into normalized user claims", () => {
-		fetchMock.get("https://github.com").intercept({ path: /login\/oauth\/access_token/, method: "POST" })
-			.reply(200, { access_token: "gho_test", token_type: "bearer", scope: "user:email" },
-				{ headers: { "content-type": "application/json" } });
-		fetchMock.get("https://api.github.com").intercept({ path: "/user" })
-			.reply(200, { id: 99, login: "octocat", name: "Octo Cat" });
-		fetchMock.get("https://api.github.com").intercept({ path: "/user/emails" })
-			.reply(200, [{ email: "octo@github.com", primary: true, verified: true }]);
-
-		return exchangeGithubCode(env, "code123").then((user) => {
-			expect(user.sub).toBe("gh|99");
-			expect(user.email).toBe("octo@github.com");
-			expect(user.name).toBe("Octo Cat");
-		});
+	it("exchanges a code into normalized user claims", async () => {
+		stubFetch(githubRoutes({ id: 99, login: "octocat", name: "Octo Cat" }, "octo@github.com"));
+		const user = await exchangeGithubCode(env, "code123");
+		expect(user.sub).toBe("gh|99");
+		expect(user.email).toBe("octo@github.com");
+		expect(user.name).toBe("Octo Cat");
 	});
 });
 ```
@@ -863,7 +900,7 @@ import { GitHub } from "arctic";
 import type { UserClaims } from "./types";
 
 const SCOPES = ["read:user", "user:email"];
-const UA = "oauth-worker";
+const UA = "auth-gateway";
 
 function client(env: Env): GitHub {
 	return new GitHub(env.GITHUB_CLIENT_ID, env.GITHUB_CLIENT_SECRET, env.GITHUB_REDIRECT_URI);
@@ -929,13 +966,12 @@ git commit -m "feat: GitHub identity adapter via arctic"
 `test/handlers.test.ts`:
 
 ```typescript
-import { env, fetchMock } from "cloudflare:test";
-import { createLocalJWKSet, jwtVerify } from "jose";
-import { afterEach, beforeAll, describe, expect, it } from "vitest";
+import { env } from "cloudflare:workers";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { githubRoutes, stubFetch } from "./helpers";
 import app from "../src/index";
 
-beforeAll(() => fetchMock.activate());
-afterEach(() => fetchMock.assertNoPendingInterceptors());
+afterEach(() => vi.unstubAllGlobals());
 
 function ctx() {
 	return { ...env, waitUntil() {}, passThroughOnException() {} } as unknown as ExecutionContext;
@@ -966,17 +1002,10 @@ describe("auth routes", () => {
 	});
 
 	it("completes /callback: sets cookies and redirects back", async () => {
+		stubFetch(githubRoutes({ id: 7, login: "u", name: "U" }, "u@x.com"));
 		// Seed a valid state by calling /authorize first.
 		const authRes = await app.request("/authorize?redirect_uri=https://app1.yourdomain.com/cb", {}, env, ctx());
 		const state = new URL(authRes.headers.get("location")!).searchParams.get("state")!;
-
-		fetchMock.get("https://github.com").intercept({ path: /access_token/, method: "POST" })
-			.reply(200, { access_token: "gho", token_type: "bearer", scope: "user:email" },
-				{ headers: { "content-type": "application/json" } });
-		fetchMock.get("https://api.github.com").intercept({ path: "/user" })
-			.reply(200, { id: 7, login: "u", name: "U" });
-		fetchMock.get("https://api.github.com").intercept({ path: "/user/emails" })
-			.reply(200, [{ email: "u@x.com", primary: true, verified: true }]);
 
 		const res = await app.request(`/callback?code=c&state=${state}`, {}, env, ctx());
 		expect(res.status).toBe(302);
@@ -1025,7 +1054,14 @@ export async function callback(c: Ctx): Promise<Response> {
 	}
 	if (!code) return c.text("missing code", 400);
 
-	const user = await exchangeGithubCode(c.env, code);
+	// A rejected/expired code makes arctic throw — that's a client/auth failure,
+	// so normalize to 401 rather than letting it surface as a 500.
+	let user;
+	try {
+		user = await exchangeGithubCode(c.env, code);
+	} catch {
+		return c.text("authentication failed", 401);
+	}
 	const access = await issueAccessToken(c.env, user);
 	const refresh = await issueRefreshToken(c.env, user.sub);
 
@@ -1330,14 +1366,14 @@ This test drives a full login through the worker, extracts the issued access tok
 `test/e2e.test.ts`:
 
 ```typescript
-import { env, fetchMock } from "cloudflare:test";
-import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { env } from "cloudflare:workers";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { requireUser } from "../packages/auth-verify/src/index";
 import { getPublicJwks } from "../src/keys";
 import app from "../src/index";
+import { githubRoutes, json, stubFetch } from "./helpers";
 
-beforeAll(() => fetchMock.activate());
-afterEach(() => fetchMock.assertNoPendingInterceptors());
+afterEach(() => vi.unstubAllGlobals());
 
 function ctx() {
 	return { ...env, waitUntil() {}, passThroughOnException() {} } as unknown as ExecutionContext;
@@ -1347,21 +1383,16 @@ const OPTS = { jwksUrl: "https://auth.yourdomain.com/.well-known/jwks.json", iss
 
 describe("end-to-end", () => {
 	it("logs in, then a resource worker accepts the token and rejects tampering", async () => {
-		// Point requireUser's JWKS fetch at the worker's real public keys.
+		// One stub serves both the GitHub OAuth calls and requireUser's JWKS fetch
+		// (pointed at the worker's real public keys).
 		const jwks = await getPublicJwks(env);
-		globalThis.fetch = vi.fn(async () =>
-			new Response(JSON.stringify(jwks), { headers: { "content-type": "application/json" } }),
-		) as unknown as typeof fetch;
+		stubFetch([
+			...githubRoutes({ id: 42, login: "u", name: "U" }, "u@x.com"),
+			{ match: (u) => u.includes("/.well-known/jwks.json"), respond: () => json(jwks) },
+		]);
 
 		const authRes = await app.request("/authorize?redirect_uri=https://app1.yourdomain.com/cb", {}, env, ctx());
 		const state = new URL(authRes.headers.get("location")!).searchParams.get("state")!;
-
-		fetchMock.get("https://github.com").intercept({ path: /access_token/, method: "POST" })
-			.reply(200, { access_token: "gho", token_type: "bearer", scope: "user:email" },
-				{ headers: { "content-type": "application/json" } });
-		fetchMock.get("https://api.github.com").intercept({ path: "/user" }).reply(200, { id: 42, login: "u", name: "U" });
-		fetchMock.get("https://api.github.com").intercept({ path: "/user/emails" })
-			.reply(200, [{ email: "u@x.com", primary: true, verified: true }]);
 
 		const cbRes = await app.request(`/callback?code=c&state=${state}`, {}, env, ctx());
 		const atCookie = cbRes.headers.getSetCookie().find((c) => c.startsWith("__Secure-fleet_at="))!;
@@ -1475,3 +1506,621 @@ git commit -m "docs: deployment prerequisites and resource-worker usage"
 **Placeholder scan:** No TBD/TODO; every code step shows full code. The one explicit scope note (`/token` issues minimal claims) is called out, not a hidden gap.
 
 **Type consistency:** `UserClaims`/`VerifiedUser` fields (`sub`, `email`, `name`, `scopes`) consistent across Tasks 1, 3, 7, 9. Cookie names `__Secure-fleet_at` / `__Secure-fleet_rt` consistent across Tasks 6, 8, 9, 10. Function names (`issueAccessToken`, `issueRefreshToken`, `rotateRefreshToken`, `revokeRefreshToken`, `createState`, `consumeState`, `githubAuthUrl`, `exchangeGithubCode`, `getPublicJwks`, `loadSigningKey`, `requireUser`) match between their producing task and every consumer.
+
+---
+
+# Post-Review Hardening (Tasks 12–14)
+
+Added after the final whole-branch review surfaced findings the user chose to fix:
+move refresh-token state to a per-family **Durable Object** (atomic rotation/theft
+detection), add **credentialed CORS** for browser refresh, and a bundle of small
+correctness/coverage fixes. The refresh-token function signatures
+(`issueRefreshToken`/`rotateRefreshToken`/`revokeRefreshToken`) are unchanged, so the
+handlers (Task 8) keep working — only the token string gains a `family.` prefix and
+the backing store changes from KV to a DO.
+
+## Task 12: Refresh tokens via a per-family Durable Object
+
+**Files:**
+- Create: `src/crypto.ts` (shared `randomToken`, `sha256`)
+- Create: `src/refreshFamily.ts` (the `RefreshFamily` Durable Object)
+- Rewrite: `src/refresh.ts` (now a thin DO client)
+- Modify: `src/index.ts` (export the DO class)
+- Modify: `wrangler.jsonc` (DO binding + migration)
+- Rewrite: `test/refresh.test.ts` (3-part token format; behavior preserved)
+
+**Interfaces:**
+- Produces (unchanged signatures): `issueRefreshToken(env, userId): Promise<string>`,
+  `rotateRefreshToken(env, presented): Promise<{ userId; refreshToken }>`,
+  `revokeRefreshToken(env, presented): Promise<void>`. Token string is now
+  `"<family>.<tokenId>.<secret>"`.
+- DO RPC: `RefreshFamily.issue(userId, ttlSec)`, `.rotate(tokenId, secret, ttlSec)`,
+  `.revoke(tokenId, secret)`.
+
+- [ ] **Step 1: Add the DO binding + migration to `wrangler.jsonc`**
+
+Add these top-level keys (alongside `kv_namespaces`/`vars`):
+
+```jsonc
+	"durable_objects": {
+		"bindings": [{ "name": "REFRESH_FAMILY", "class_name": "RefreshFamily" }]
+	},
+	"migrations": [
+		{ "tag": "v1", "new_sqlite_classes": ["RefreshFamily"] }
+	]
+```
+
+Then run `pnpm wrangler types` (regenerates `Env` with `REFRESH_FAMILY`).
+
+- [ ] **Step 2: Create `src/crypto.ts`**
+
+```typescript
+export function randomToken(bytes: number): string {
+	const buf = crypto.getRandomValues(new Uint8Array(bytes));
+	return btoa(String.fromCharCode(...buf)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
+export async function sha256(input: string): Promise<string> {
+	const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(input));
+	return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+```
+
+- [ ] **Step 3: Write the failing DO refresh test**
+
+Rewrite `test/refresh.test.ts` (token now has 3 dot-separated parts; the
+Vitest pool provides the DO binding and resets DO storage between tests):
+
+```typescript
+import { env } from "cloudflare:workers";
+import { describe, expect, it } from "vitest";
+import { issueRefreshToken, revokeRefreshToken, rotateRefreshToken } from "../src/refresh";
+
+describe("refresh tokens (Durable Object)", () => {
+	it("issues a 3-part token that rotates and returns the same user", async () => {
+		const t1 = await issueRefreshToken(env, "gh|1");
+		expect(t1.split(".")).toHaveLength(3);
+		const { userId, refreshToken: t2 } = await rotateRefreshToken(env, t1);
+		expect(userId).toBe("gh|1");
+		expect(t2).not.toBe(t1);
+	});
+
+	it("rejects a rotated (reused) token and revokes the whole family", async () => {
+		const t1 = await issueRefreshToken(env, "gh|2");
+		const { refreshToken: t2 } = await rotateRefreshToken(env, t1);
+		await expect(rotateRefreshToken(env, t1)).rejects.toThrow();
+		await expect(rotateRefreshToken(env, t2)).rejects.toThrow();
+	});
+
+	it("rejects an unknown token", async () => {
+		await expect(rotateRefreshToken(env, "fam.nope.nope")).rejects.toThrow();
+	});
+
+	it("rejects a malformed token (wrong part count)", async () => {
+		const t1 = await issueRefreshToken(env, "gh|2b");
+		await expect(rotateRefreshToken(env, `${t1}.junk`)).rejects.toThrow();
+	});
+
+	it("revokes on logout", async () => {
+		const t1 = await issueRefreshToken(env, "gh|3");
+		await revokeRefreshToken(env, t1);
+		await expect(rotateRefreshToken(env, t1)).rejects.toThrow();
+	});
+
+	it("revoke with a wrong secret does not invalidate the real token", async () => {
+		const t1 = await issueRefreshToken(env, "gh|4");
+		const [family, tokenId] = t1.split(".");
+		await revokeRefreshToken(env, `${family}.${tokenId}.wrong`);
+		await expect(rotateRefreshToken(env, t1)).resolves.toBeTruthy();
+	});
+});
+```
+
+- [ ] **Step 4: Run the test to verify it fails**
+
+Run: `pnpm test test/refresh.test.ts`
+Expected: FAIL — `src/refresh.ts` still exports the KV version / no DO binding wired.
+
+- [ ] **Step 5: Implement the `RefreshFamily` Durable Object (`src/refreshFamily.ts`)**
+
+```typescript
+import { DurableObject } from "cloudflare:workers";
+import { randomToken, sha256 } from "./crypto";
+
+interface MintedToken {
+	tokenId: string;
+	secret: string;
+	hash: string;
+}
+
+async function mintToken(): Promise<MintedToken> {
+	const tokenId = randomToken(16);
+	const secret = randomToken(32);
+	return { tokenId, secret, hash: await sha256(secret) };
+}
+
+// One Durable Object instance per refresh-token family. A DO instance is
+// single-threaded, so the head-check + rotate below is atomic — closing the race
+// that an eventually-consistent KV read-then-write cannot. The DO name is the
+// family id. Every issued token's secret hash is retained so reuse of any rotated
+// token is detected (and proof-of-possession is checked before any revocation).
+export class RefreshFamily extends DurableObject<Env> {
+	constructor(ctx: DurableObjectState, env: Env) {
+		super(ctx, env);
+		this.ctx.storage.sql.exec(
+			"CREATE TABLE IF NOT EXISTS tokens (token_id TEXT PRIMARY KEY, secret_hash TEXT NOT NULL)",
+		);
+	}
+
+	private lookup(tokenId: string): string | undefined {
+		const row = this.ctx.storage.sql
+			.exec("SELECT secret_hash FROM tokens WHERE token_id = ?", tokenId)
+			.toArray()[0] as { secret_hash: string } | undefined;
+		return row?.secret_hash;
+	}
+
+	async issue(userId: string, ttlSec: number): Promise<string> {
+		const { tokenId, secret, hash } = await mintToken();
+		this.ctx.storage.sql.exec("INSERT INTO tokens (token_id, secret_hash) VALUES (?, ?)", tokenId, hash);
+		await this.ctx.storage.put("userId", userId);
+		await this.ctx.storage.put("head", tokenId);
+		await this.ctx.storage.setAlarm(Date.now() + ttlSec * 1000);
+		return `${tokenId}.${secret}`;
+	}
+
+	async rotate(tokenId: string, secret: string, ttlSec: number): Promise<{ userId: string; token: string }> {
+		const hash = this.lookup(tokenId);
+		if (!hash) throw new Error("unknown refresh token");
+		if ((await sha256(secret)) !== hash) throw new Error("bad refresh secret");
+
+		const head = await this.ctx.storage.get<string>("head");
+		if (head !== tokenId) {
+			// Reuse of an already-rotated token → revoke the entire family.
+			await this.ctx.storage.deleteAll();
+			throw new Error("refresh token reuse detected");
+		}
+
+		const userId = (await this.ctx.storage.get<string>("userId")) ?? "";
+		const next = await mintToken();
+		this.ctx.storage.sql.exec("INSERT INTO tokens (token_id, secret_hash) VALUES (?, ?)", next.tokenId, next.hash);
+		await this.ctx.storage.put("head", next.tokenId);
+		await this.ctx.storage.setAlarm(Date.now() + ttlSec * 1000);
+		return { userId, token: `${next.tokenId}.${next.secret}` };
+	}
+
+	async revoke(tokenId: string, secret: string): Promise<void> {
+		const hash = this.lookup(tokenId);
+		if (!hash) return;
+		if ((await sha256(secret)) !== hash) return;
+		await this.ctx.storage.deleteAll();
+	}
+
+	async alarm(): Promise<void> {
+		// Family TTL elapsed — drop all state.
+		await this.ctx.storage.deleteAll();
+	}
+}
+```
+
+- [ ] **Step 6: Rewrite `src/refresh.ts` as a thin DO client**
+
+```typescript
+import { getConfig } from "./config";
+import { randomToken } from "./crypto";
+
+interface ParsedToken {
+	family: string;
+	tokenId: string;
+	secret: string;
+}
+
+function parseToken(presented: string): ParsedToken | null {
+	const parts = presented.split(".");
+	if (parts.length !== 3 || !parts[0] || !parts[1] || !parts[2]) return null;
+	return { family: parts[0], tokenId: parts[1], secret: parts[2] };
+}
+
+function familyStub(env: Env, family: string) {
+	return env.REFRESH_FAMILY.get(env.REFRESH_FAMILY.idFromName(family));
+}
+
+export async function issueRefreshToken(env: Env, userId: string): Promise<string> {
+	const family = randomToken(16);
+	const token = await familyStub(env, family).issue(userId, getConfig(env).refreshTtlSec);
+	return `${family}.${token}`;
+}
+
+export async function rotateRefreshToken(
+	env: Env,
+	presented: string,
+): Promise<{ userId: string; refreshToken: string }> {
+	const parsed = parseToken(presented);
+	if (!parsed) throw new Error("malformed refresh token");
+	const { userId, token } = await familyStub(env, parsed.family).rotate(
+		parsed.tokenId,
+		parsed.secret,
+		getConfig(env).refreshTtlSec,
+	);
+	return { userId, refreshToken: `${parsed.family}.${token}` };
+}
+
+export async function revokeRefreshToken(env: Env, presented: string): Promise<void> {
+	const parsed = parseToken(presented);
+	if (!parsed) return;
+	await familyStub(env, parsed.family).revoke(parsed.tokenId, parsed.secret);
+}
+```
+
+- [ ] **Step 7: Export the DO from `src/index.ts`**
+
+Add (keep `export default app;`):
+
+```typescript
+export { RefreshFamily } from "./refreshFamily";
+```
+
+- [ ] **Step 8: Run tests + typecheck**
+
+Run: `pnpm test test/refresh.test.ts` → all refresh cases pass.
+Run: `pnpm test` → full worker suite passes (the `/token` and e2e flows now go through the DO). 
+Run: `pnpm typecheck` → clean (`env.REFRESH_FAMILY` typed by `wrangler types`).
+Expected: all green, pristine.
+
+- [ ] **Step 9: Commit**
+
+```bash
+git add -A
+git commit -m "feat: refresh tokens via per-family Durable Object (atomic rotation)"
+```
+
+---
+
+## Task 13: Credentialed CORS for browser refresh
+
+**Files:**
+- Create: `src/cors.ts`
+- Modify: `src/handlers.ts` (apply CORS on `/token` + `/logout`; add a preflight handler)
+- Modify: `src/index.ts` (register `OPTIONS /token`, `OPTIONS /logout`)
+- Test: `test/cors.test.ts`
+
+**Interfaces:**
+- Produces: `corsHeaders(env, request): Record<string,string> | null`,
+  `corsPreflight(c): Response`.
+
+- [ ] **Step 1: Write the failing CORS test**
+
+`test/cors.test.ts`:
+
+```typescript
+import { env } from "cloudflare:workers";
+import { describe, expect, it } from "vitest";
+import app from "../src/index";
+
+function ctx() {
+	return { ...env, waitUntil() {}, passThroughOnException() {} } as unknown as ExecutionContext;
+}
+
+describe("CORS for browser refresh", () => {
+	it("answers preflight for an allowlisted origin with credentialed CORS", async () => {
+		const res = await app.request(
+			"/token",
+			{ method: "OPTIONS", headers: { origin: "https://app1.yourdomain.com" } },
+			env,
+			ctx(),
+		);
+		expect(res.status).toBe(204);
+		expect(res.headers.get("access-control-allow-origin")).toBe("https://app1.yourdomain.com");
+		expect(res.headers.get("access-control-allow-credentials")).toBe("true");
+		expect(res.headers.get("vary")).toContain("Origin");
+	});
+
+	it("rejects preflight from a non-allowlisted origin", async () => {
+		const res = await app.request(
+			"/token",
+			{ method: "OPTIONS", headers: { origin: "https://evil.com" } },
+			env,
+			ctx(),
+		);
+		expect(res.status).toBe(403);
+		expect(res.headers.get("access-control-allow-origin")).toBeNull();
+	});
+
+	it("echoes CORS headers on a POST /token from an allowlisted origin", async () => {
+		const res = await app.request(
+			"/token",
+			{ method: "POST", headers: { origin: "https://app1.yourdomain.com" } },
+			env,
+			ctx(),
+		);
+		// No refresh cookie → 401, but CORS headers must still be present so the
+		// browser can read the response.
+		expect(res.headers.get("access-control-allow-origin")).toBe("https://app1.yourdomain.com");
+		expect(res.headers.get("access-control-allow-credentials")).toBe("true");
+	});
+});
+```
+
+- [ ] **Step 2: Run the test to verify it fails**
+
+Run: `pnpm test test/cors.test.ts`
+Expected: FAIL — no CORS handling / no `src/cors` module.
+
+- [ ] **Step 3: Implement `src/cors.ts`**
+
+```typescript
+import type { Context } from "hono";
+import { getConfig } from "./config";
+
+// Credentialed CORS headers for a cross-origin request from an allowlisted app
+// origin, or null when the origin is absent or not allowed. The allowlist is the
+// same first-party app origin set used for redirect validation.
+export function corsHeaders(env: Env, request: Request): Record<string, string> | null {
+	const origin = request.headers.get("origin");
+	if (!origin || !getConfig(env).redirectAllowlist.includes(origin)) return null;
+	return {
+		"Access-Control-Allow-Origin": origin,
+		"Access-Control-Allow-Credentials": "true",
+		"Access-Control-Allow-Methods": "POST, OPTIONS",
+		"Access-Control-Allow-Headers": "content-type",
+		Vary: "Origin",
+	};
+}
+
+export function corsPreflight(c: Context<{ Bindings: Env }>): Response {
+	const headers = corsHeaders(c.env, c.req.raw);
+	if (!headers) return c.body(null, 403);
+	return new Response(null, { status: 204, headers });
+}
+```
+
+- [ ] **Step 4: Apply CORS in `src/handlers.ts` (`token` and `logout`)**
+
+Add an import and a small helper at the top of `handlers.ts`:
+
+```typescript
+import { corsHeaders } from "./cors";
+```
+
+In BOTH the `token` and `logout` handlers, immediately before each `return`,
+attach CORS headers when the request origin is allowlisted:
+
+```typescript
+	const cors = corsHeaders(c.env, c.req.raw);
+	if (cors) for (const [k, v] of Object.entries(cors)) c.header(k, v, { append: true });
+```
+
+(Place it after the `Set-Cookie` headers are set and before the final `return` in
+each handler — both the success and the early-return 401 paths in `token` should
+carry CORS, so set `cors` once at the top of the handler and apply on every return
+path. The simplest correct shape: compute `cors` first, and write a tiny local
+`done(res)` that adds the headers — or just repeat the 2-line loop before each
+`return`.)
+
+- [ ] **Step 5: Register OPTIONS routes in `src/index.ts`**
+
+```typescript
+import { corsPreflight } from "./cors";
+// ...
+app.options("/token", corsPreflight);
+app.options("/logout", corsPreflight);
+```
+
+- [ ] **Step 6: Run tests**
+
+Run: `pnpm test test/cors.test.ts` → all 3 pass.
+Run: `pnpm test` → full suite green, pristine. Run `pnpm typecheck` → clean.
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add -A
+git commit -m "feat: credentialed CORS on /token and /logout for browser refresh"
+```
+
+---
+
+## Task 14: Review fix bundle (package build, GitHub validation, docs, test coverage)
+
+**Files:**
+- Modify: `packages/auth-verify/package.json` (add `prepare`)
+- Modify: `src/github.ts` (validate responses)
+- Modify: `README.md` (`/token` description)
+- Modify: `test/tokens.test.ts` (claim/TTL assertions)
+- Modify: `packages/auth-verify/test/verify.test.ts` (expired / iss / aud cases)
+
+- [ ] **Step 1: Make the package build on git install**
+
+In `packages/auth-verify/package.json`, add to `scripts`:
+
+```json
+		"prepare": "tsup src/index.ts --format esm --dts"
+```
+
+So a consumer's `pnpm add github:<you>/auth-verify#v1` builds `dist/` during install
+(devDeps incl. `tsup`/`typescript` are present). Verify: `pnpm --filter auth-verify install` (or root `pnpm install`) produces `dist/`.
+
+- [ ] **Step 2: Validate GitHub responses in `src/github.ts`**
+
+In `exchangeGithubCode`, after each `fetch`, check `response.ok` and validate the
+profile shape before minting claims. Replace the profile/email fetch block with:
+
+```typescript
+	const profileRes = await fetch("https://api.github.com/user", { headers });
+	if (!profileRes.ok) throw new Error(`github /user ${profileRes.status}`);
+	const profile = (await profileRes.json()) as GithubUser;
+	if (typeof profile.id !== "number") throw new Error("github profile missing id");
+
+	const emailsRes = await fetch("https://api.github.com/user/emails", { headers });
+	if (!emailsRes.ok) throw new Error(`github /user/emails ${emailsRes.status}`);
+	const emails = (await emailsRes.json()) as GithubEmail[];
+	const primary = emails.find((e) => e.primary && e.verified) ?? null;
+```
+
+(The existing `test/github.test.ts` happy path still passes; the stub returns 200 +
+a numeric `id`.)
+
+- [ ] **Step 3: Fix the `/token` description in `README.md`**
+
+Find the route docs and correct `/token`: it is called with the refresh **cookie**
+(no JSON body), and on success returns `200` with refreshed `Set-Cookie` headers
+(no token in the body). `/logout` returns `204` and clears cookies. Both accept
+credentialed CORS from allowlisted app origins.
+
+- [ ] **Step 4: Tighten `test/tokens.test.ts`**
+
+Add assertions to the existing test (after the current ones):
+
+```typescript
+		expect(payload.name).toBe("A B");
+		expect(typeof payload.iat).toBe("number");
+		expect(typeof payload.exp).toBe("number");
+		expect((payload.exp as number) - (payload.iat as number)).toBe(900);
+```
+
+- [ ] **Step 5: Add security-contract cases to `packages/auth-verify/test/verify.test.ts`**
+
+Add three cases that sign tokens with the test key and assert `requireUser` throws 401:
+an **expired** token (`setExpirationTime("-1m")`), an **issuer mismatch**
+(`setIssuer("https://evil")`), and an **audience mismatch** (`setAudience("other")`).
+Each: build the token with the same key/`kid` as the existing valid-token setup, then
+`await expect(requireUser(reqWith(token), OPTS)).rejects.toBeInstanceOf(Response)`.
+
+- [ ] **Step 6: Run all suites + typecheck**
+
+Run: `pnpm test` (worker), `pnpm --filter auth-verify test` (package),
+`pnpm typecheck`. All green, pristine, `dist/` built.
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add -A
+git commit -m "fix: package prepare build, GitHub response validation, doc + test coverage"
+```
+
+---
+
+## Task 15: Final-review fixes (refresh claims, JWKS rotation overlap, doc/test minors)
+
+From the final whole-branch review (user chose to implement key-rotation overlap).
+
+**Files:** `src/refreshFamily.ts`, `src/refresh.ts`, `src/handlers.ts`, `src/keys.ts`, `src/env.d.ts`, `test/refresh.test.ts`, `test/keys.test.ts`, `test/cors.test.ts`, `README.md`.
+
+### Part A — refresh preserves full identity claims
+
+- [ ] **A1: `src/refreshFamily.ts` — store/return full `UserClaims`** (not just `userId`).
+
+`import type { UserClaims } from "./types";` Then change `issue`/`rotate`:
+
+```typescript
+	async issue(claims: UserClaims, ttlSec: number): Promise<string> {
+		this.ensureSchema();
+		const { tokenId, secret, hash } = await mintToken();
+		this.ctx.storage.sql.exec("INSERT INTO tokens (token_id, secret_hash) VALUES (?, ?)", tokenId, hash);
+		await this.ctx.storage.put("claims", claims);
+		await this.ctx.storage.put("head", tokenId);
+		await this.ctx.storage.setAlarm(Date.now() + ttlSec * 1000);
+		return `${tokenId}.${secret}`;
+	}
+
+	async rotate(tokenId: string, secret: string, ttlSec: number): Promise<{ ok: true; claims: UserClaims; token: string } | { ok: false }> {
+		this.ensureSchema();
+		return this.ctx.blockConcurrencyWhile(async () => {
+			const hash = this.lookup(tokenId);
+			if (!hash) return { ok: false };
+			if ((await sha256(secret)) !== hash) return { ok: false };
+			const head = await this.ctx.storage.get<string>("head");
+			if (head !== tokenId) {
+				await this.ctx.storage.deleteAll();
+				return { ok: false };
+			}
+			const claims = (await this.ctx.storage.get<UserClaims>("claims")) ?? { sub: "", email: null, name: null, scopes: [] };
+			const next = await mintToken();
+			this.ctx.storage.sql.exec("INSERT INTO tokens (token_id, secret_hash) VALUES (?, ?)", next.tokenId, next.hash);
+			await this.ctx.storage.put("head", next.tokenId);
+			await this.ctx.storage.setAlarm(Date.now() + ttlSec * 1000);
+			return { ok: true, claims, token: `${next.tokenId}.${next.secret}` };
+		});
+	}
+```
+
+(`revoke`/`alarm`/`ensureSchema`/`lookup` unchanged.)
+
+- [ ] **A2: `src/refresh.ts`** — `import type { UserClaims } from "./types";`
+
+```typescript
+export async function issueRefreshToken(env: Env, user: UserClaims): Promise<string> {
+	const family = randomToken(16);
+	const token = await familyStub(env, family).issue(user, getConfig(env).refreshTtlSec);
+	return `${family}.${token}`;
+}
+
+export async function rotateRefreshToken(env: Env, presented: string): Promise<{ user: UserClaims; refreshToken: string }> {
+	const parsed = parseToken(presented);
+	if (!parsed) throw new Error("malformed refresh token");
+	const result = await familyStub(env, parsed.family).rotate(parsed.tokenId, parsed.secret, getConfig(env).refreshTtlSec);
+	if (!result.ok) throw new Error("invalid refresh token");
+	return { user: result.claims, refreshToken: `${parsed.family}.${result.token}` };
+}
+```
+
+(`revokeRefreshToken` unchanged.)
+
+- [ ] **A3: `src/handlers.ts`** — in `callback`: `const refresh = await issueRefreshToken(c.env, user);` (whole `user`). In `token`: replace the minimal-claims reissue with:
+
+```typescript
+		const { user, refreshToken } = await rotateRefreshToken(c.env, presented);
+		const access = await issueAccessToken(c.env, user);
+```
+
+- [ ] **A4: `test/refresh.test.ts`** — issue with a full `UserClaims` (`{ sub: "gh|1", email: "a@b.com", name: "A", scopes: ["read"] }`); after rotate, destructure `user` (not `userId`) and assert `expect(user).toEqual(theIssuedClaims)`. Keep all theft-detection/concurrency/malformed/revoke cases.
+
+### Part B — JWKS key-rotation overlap
+
+- [ ] **B1: `src/env.d.ts`** — add `SIGNING_PUBLIC_JWKS?: string;`
+
+- [ ] **B2: `src/keys.ts`**:
+
+```typescript
+export async function getPublicJwks(env: Env): Promise<{ keys: Array<Record<string, unknown>> }> {
+	const { d: _d, ...current } = parsePrivateJwk(env) as unknown as Record<string, unknown>;
+	const extra = env.SIGNING_PUBLIC_JWKS
+		? (JSON.parse(env.SIGNING_PUBLIC_JWKS) as Array<Record<string, unknown>>)
+		: [];
+	return { keys: [current, ...extra] };
+}
+```
+
+(Signing always uses the current `SIGNING_PRIVATE_JWK`. Rotation: put the OLD public JWK into `SIGNING_PUBLIC_JWKS`, switch the private key, remove the old entry after `ACCESS_TTL_SEC`.)
+
+- [ ] **B3: `test/keys.test.ts`** — add an overlap case using a CONSTRUCTED env (do NOT change global harness bindings; the handlers test asserts a single key):
+
+```typescript
+import { exportJWK, generateKeyPair } from "jose";
+// ...
+	it("publishes active + previous public keys when SIGNING_PUBLIC_JWKS is set", async () => {
+		const { publicKey } = await generateKeyPair("EdDSA", { crv: "Ed25519", extractable: true });
+		const prev = await exportJWK(publicKey);
+		prev.kid = "prev-kid"; prev.alg = "EdDSA"; prev.use = "sig";
+		const envWith = { ...env, SIGNING_PUBLIC_JWKS: JSON.stringify([prev]) } as unknown as Env;
+		const jwks = await getPublicJwks(envWith);
+		const kids = jwks.keys.map((k) => k.kid);
+		expect(kids).toContain("test-kid");
+		expect(kids).toContain("prev-kid");
+		expect(jwks.keys).toHaveLength(2);
+	});
+```
+
+### Part C — doc/test minors
+
+- [ ] **C1: `test/cors.test.ts`** — add `/logout` coverage mirroring the `/token` cases: preflight from an allowlisted origin → `204` with `Access-Control-Allow-Origin` = that origin and `Access-Control-Allow-Credentials: true`; `POST /logout` from an allowlisted origin carries those CORS headers.
+
+- [ ] **C2: `README.md`** — (a) `REDIRECT_ALLOWLIST` is an exact-**origin** allowlist (also reused for credentialed-CORS origins), not full redirect URLs; (b) `COOKIE_DOMAIN` applies to the **access** cookie `__Secure-fleet_at`; the refresh cookie `__Secure-fleet_rt` is **host-only** (no `Domain`).
+
+- [ ] **D: Verify + commit**
+
+`pnpm test` (worker, all pass + pristine: `grep -ciE "uncaught|SQLITE|missing required|warn"` → 0), `pnpm --filter auth-verify test`, `pnpm typecheck` clean.
+
+```bash
+git add -A
+git commit -m "fix: refresh preserves claims; JWKS rotation overlap; doc/test fixes"
+```

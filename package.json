@@ -1,20 +1,27 @@
 {
-  "name": "cloudflare-workers-openapi",
+  "name": "auth-gateway",
   "version": "0.0.1",
   "private": true,
+  "type": "module",
+  "packageManager": "pnpm@11.9.0",
   "scripts": {
     "deploy": "wrangler deploy",
     "dev": "wrangler dev",
     "start": "wrangler dev",
-    "cf-typegen": "wrangler types"
+    "cf-typegen": "wrangler types",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "chanfana": "^3.3.0",
-    "hono": "^4.12.12",
-    "zod": "^4.3.6"
+    "arctic": "^3.7.0",
+    "hono": "^4.12.27",
+    "jose": "^6.2.3"
   },
   "devDependencies": {
+    "@cloudflare/vitest-pool-workers": "^0.16.19",
     "@types/node": "^25.9.4",
+    "typescript": "^5.9.3",
+    "vitest": "^4.1.9",
     "wrangler": "^4.104.0"
   }
 }
