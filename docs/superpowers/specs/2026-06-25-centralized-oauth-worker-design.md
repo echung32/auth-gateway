@@ -18,6 +18,8 @@ apps and token-based APIs — with seamless single sign-on across them.
 | Identity source | GitHub OAuth (upstream) | No password storage; low maintenance. |
 | Consumers | Mix of browser web apps + token APIs | Both served by one token primitive. |
 | Token validation | **JWT verified offline** by resource workers | Central worker stays off the hot path; one primitive serves browser + API. |
+| Refresh-token store | **Per-family Durable Object** (atomic rotate/revoke) | KV's non-atomic read-then-write can't guarantee single-use rotation/theft-detection on a 30-day credential; a per-family DO serializes the head check. (Revised from the original KV design after review.) |
+| Browser refresh | **Credentialed CORS** on `/token` + `/logout` | Browser apps on allowlisted origins call `auth.<domain>/token` cross-origin with `credentials: include`; the Set-Cookie only applies with `Access-Control-Allow-Credentials` + a specific `Access-Control-Allow-Origin`. |
 | Client types | First-party now, third-party likely later | Build lean; keep an OAuth-shaped seam for `workers-oauth-provider` later. |
 | Domain | Custom domain, shared apex (`.yourdomain.com`) | Enables a shared cookie → true seamless browser SSO. |
 | Revocation | No denylist on resource-worker hot path | Zero KV reads per request; revocation bites at refresh (≤15-min window). |
@@ -78,7 +80,7 @@ apps redirect to `auth.yourdomain.com/authorize?redirect_uri=...`.
 
 ### Storage & keys
 
-- `AUTH_KV`: refresh tokens (revocable, rotated) keyed for theft detection.
+- `AUTH_KV`: single-use OAuth `state` only. (Refresh tokens moved to a per-family Durable Object — `RefreshFamily` — for atomic rotation/theft-detection.)
 - Secrets: Ed25519 private key (signing), GitHub client ID/secret.
 - Access tokens are **not** stored — they are self-verifying JWTs.
 

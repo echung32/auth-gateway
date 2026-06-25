@@ -1506,3 +1506,493 @@ git commit -m "docs: deployment prerequisites and resource-worker usage"
 **Placeholder scan:** No TBD/TODO; every code step shows full code. The one explicit scope note (`/token` issues minimal claims) is called out, not a hidden gap.
 
 **Type consistency:** `UserClaims`/`VerifiedUser` fields (`sub`, `email`, `name`, `scopes`) consistent across Tasks 1, 3, 7, 9. Cookie names `__Secure-fleet_at` / `__Secure-fleet_rt` consistent across Tasks 6, 8, 9, 10. Function names (`issueAccessToken`, `issueRefreshToken`, `rotateRefreshToken`, `revokeRefreshToken`, `createState`, `consumeState`, `githubAuthUrl`, `exchangeGithubCode`, `getPublicJwks`, `loadSigningKey`, `requireUser`) match between their producing task and every consumer.
+
+---
+
+# Post-Review Hardening (Tasks 12–14)
+
+Added after the final whole-branch review surfaced findings the user chose to fix:
+move refresh-token state to a per-family **Durable Object** (atomic rotation/theft
+detection), add **credentialed CORS** for browser refresh, and a bundle of small
+correctness/coverage fixes. The refresh-token function signatures
+(`issueRefreshToken`/`rotateRefreshToken`/`revokeRefreshToken`) are unchanged, so the
+handlers (Task 8) keep working — only the token string gains a `family.` prefix and
+the backing store changes from KV to a DO.
+
+## Task 12: Refresh tokens via a per-family Durable Object
+
+**Files:**
+- Create: `src/crypto.ts` (shared `randomToken`, `sha256`)
+- Create: `src/refreshFamily.ts` (the `RefreshFamily` Durable Object)
+- Rewrite: `src/refresh.ts` (now a thin DO client)
+- Modify: `src/index.ts` (export the DO class)
+- Modify: `wrangler.jsonc` (DO binding + migration)
+- Rewrite: `test/refresh.test.ts` (3-part token format; behavior preserved)
+
+**Interfaces:**
+- Produces (unchanged signatures): `issueRefreshToken(env, userId): Promise<string>`,
+  `rotateRefreshToken(env, presented): Promise<{ userId; refreshToken }>`,
+  `revokeRefreshToken(env, presented): Promise<void>`. Token string is now
+  `"<family>.<tokenId>.<secret>"`.
+- DO RPC: `RefreshFamily.issue(userId, ttlSec)`, `.rotate(tokenId, secret, ttlSec)`,
+  `.revoke(tokenId, secret)`.
+
+- [ ] **Step 1: Add the DO binding + migration to `wrangler.jsonc`**
+
+Add these top-level keys (alongside `kv_namespaces`/`vars`):
+
+```jsonc
+	"durable_objects": {
+		"bindings": [{ "name": "REFRESH_FAMILY", "class_name": "RefreshFamily" }]
+	},
+	"migrations": [
+		{ "tag": "v1", "new_sqlite_classes": ["RefreshFamily"] }
+	]
+```
+
+Then run `pnpm wrangler types` (regenerates `Env` with `REFRESH_FAMILY`).
+
+- [ ] **Step 2: Create `src/crypto.ts`**
+
+```typescript
+export function randomToken(bytes: number): string {
+	const buf = crypto.getRandomValues(new Uint8Array(bytes));
+	return btoa(String.fromCharCode(...buf)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
+export async function sha256(input: string): Promise<string> {
+	const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(input));
+	return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+```
+
+- [ ] **Step 3: Write the failing DO refresh test**
+
+Rewrite `test/refresh.test.ts` (token now has 3 dot-separated parts; the
+Vitest pool provides the DO binding and resets DO storage between tests):
+
+```typescript
+import { env } from "cloudflare:workers";
+import { describe, expect, it } from "vitest";
+import { issueRefreshToken, revokeRefreshToken, rotateRefreshToken } from "../src/refresh";
+
+describe("refresh tokens (Durable Object)", () => {
+	it("issues a 3-part token that rotates and returns the same user", async () => {
+		const t1 = await issueRefreshToken(env, "gh|1");
+		expect(t1.split(".")).toHaveLength(3);
+		const { userId, refreshToken: t2 } = await rotateRefreshToken(env, t1);
+		expect(userId).toBe("gh|1");
+		expect(t2).not.toBe(t1);
+	});
+
+	it("rejects a rotated (reused) token and revokes the whole family", async () => {
+		const t1 = await issueRefreshToken(env, "gh|2");
+		const { refreshToken: t2 } = await rotateRefreshToken(env, t1);
+		await expect(rotateRefreshToken(env, t1)).rejects.toThrow();
+		await expect(rotateRefreshToken(env, t2)).rejects.toThrow();
+	});
+
+	it("rejects an unknown token", async () => {
+		await expect(rotateRefreshToken(env, "fam.nope.nope")).rejects.toThrow();
+	});
+
+	it("rejects a malformed token (wrong part count)", async () => {
+		const t1 = await issueRefreshToken(env, "gh|2b");
+		await expect(rotateRefreshToken(env, `${t1}.junk`)).rejects.toThrow();
+	});
+
+	it("revokes on logout", async () => {
+		const t1 = await issueRefreshToken(env, "gh|3");
+		await revokeRefreshToken(env, t1);
+		await expect(rotateRefreshToken(env, t1)).rejects.toThrow();
+	});
+
+	it("revoke with a wrong secret does not invalidate the real token", async () => {
+		const t1 = await issueRefreshToken(env, "gh|4");
+		const [family, tokenId] = t1.split(".");
+		await revokeRefreshToken(env, `${family}.${tokenId}.wrong`);
+		await expect(rotateRefreshToken(env, t1)).resolves.toBeTruthy();
+	});
+});
+```
+
+- [ ] **Step 4: Run the test to verify it fails**
+
+Run: `pnpm test test/refresh.test.ts`
+Expected: FAIL — `src/refresh.ts` still exports the KV version / no DO binding wired.
+
+- [ ] **Step 5: Implement the `RefreshFamily` Durable Object (`src/refreshFamily.ts`)**
+
+```typescript
+import { DurableObject } from "cloudflare:workers";
+import { randomToken, sha256 } from "./crypto";
+
+interface MintedToken {
+	tokenId: string;
+	secret: string;
+	hash: string;
+}
+
+async function mintToken(): Promise<MintedToken> {
+	const tokenId = randomToken(16);
+	const secret = randomToken(32);
+	return { tokenId, secret, hash: await sha256(secret) };
+}
+
+// One Durable Object instance per refresh-token family. A DO instance is
+// single-threaded, so the head-check + rotate below is atomic — closing the race
+// that an eventually-consistent KV read-then-write cannot. The DO name is the
+// family id. Every issued token's secret hash is retained so reuse of any rotated
+// token is detected (and proof-of-possession is checked before any revocation).
+export class RefreshFamily extends DurableObject<Env> {
+	constructor(ctx: DurableObjectState, env: Env) {
+		super(ctx, env);
+		this.ctx.storage.sql.exec(
+			"CREATE TABLE IF NOT EXISTS tokens (token_id TEXT PRIMARY KEY, secret_hash TEXT NOT NULL)",
+		);
+	}
+
+	private lookup(tokenId: string): string | undefined {
+		const row = this.ctx.storage.sql
+			.exec("SELECT secret_hash FROM tokens WHERE token_id = ?", tokenId)
+			.toArray()[0] as { secret_hash: string } | undefined;
+		return row?.secret_hash;
+	}
+
+	async issue(userId: string, ttlSec: number): Promise<string> {
+		const { tokenId, secret, hash } = await mintToken();
+		this.ctx.storage.sql.exec("INSERT INTO tokens (token_id, secret_hash) VALUES (?, ?)", tokenId, hash);
+		await this.ctx.storage.put("userId", userId);
+		await this.ctx.storage.put("head", tokenId);
+		await this.ctx.storage.setAlarm(Date.now() + ttlSec * 1000);
+		return `${tokenId}.${secret}`;
+	}
+
+	async rotate(tokenId: string, secret: string, ttlSec: number): Promise<{ userId: string; token: string }> {
+		const hash = this.lookup(tokenId);
+		if (!hash) throw new Error("unknown refresh token");
+		if ((await sha256(secret)) !== hash) throw new Error("bad refresh secret");
+
+		const head = await this.ctx.storage.get<string>("head");
+		if (head !== tokenId) {
+			// Reuse of an already-rotated token → revoke the entire family.
+			await this.ctx.storage.deleteAll();
+			throw new Error("refresh token reuse detected");
+		}
+
+		const userId = (await this.ctx.storage.get<string>("userId")) ?? "";
+		const next = await mintToken();
+		this.ctx.storage.sql.exec("INSERT INTO tokens (token_id, secret_hash) VALUES (?, ?)", next.tokenId, next.hash);
+		await this.ctx.storage.put("head", next.tokenId);
+		await this.ctx.storage.setAlarm(Date.now() + ttlSec * 1000);
+		return { userId, token: `${next.tokenId}.${next.secret}` };
+	}
+
+	async revoke(tokenId: string, secret: string): Promise<void> {
+		const hash = this.lookup(tokenId);
+		if (!hash) return;
+		if ((await sha256(secret)) !== hash) return;
+		await this.ctx.storage.deleteAll();
+	}
+
+	async alarm(): Promise<void> {
+		// Family TTL elapsed — drop all state.
+		await this.ctx.storage.deleteAll();
+	}
+}
+```
+
+- [ ] **Step 6: Rewrite `src/refresh.ts` as a thin DO client**
+
+```typescript
+import { getConfig } from "./config";
+import { randomToken } from "./crypto";
+
+interface ParsedToken {
+	family: string;
+	tokenId: string;
+	secret: string;
+}
+
+function parseToken(presented: string): ParsedToken | null {
+	const parts = presented.split(".");
+	if (parts.length !== 3 || !parts[0] || !parts[1] || !parts[2]) return null;
+	return { family: parts[0], tokenId: parts[1], secret: parts[2] };
+}
+
+function familyStub(env: Env, family: string) {
+	return env.REFRESH_FAMILY.get(env.REFRESH_FAMILY.idFromName(family));
+}
+
+export async function issueRefreshToken(env: Env, userId: string): Promise<string> {
+	const family = randomToken(16);
+	const token = await familyStub(env, family).issue(userId, getConfig(env).refreshTtlSec);
+	return `${family}.${token}`;
+}
+
+export async function rotateRefreshToken(
+	env: Env,
+	presented: string,
+): Promise<{ userId: string; refreshToken: string }> {
+	const parsed = parseToken(presented);
+	if (!parsed) throw new Error("malformed refresh token");
+	const { userId, token } = await familyStub(env, parsed.family).rotate(
+		parsed.tokenId,
+		parsed.secret,
+		getConfig(env).refreshTtlSec,
+	);
+	return { userId, refreshToken: `${parsed.family}.${token}` };
+}
+
+export async function revokeRefreshToken(env: Env, presented: string): Promise<void> {
+	const parsed = parseToken(presented);
+	if (!parsed) return;
+	await familyStub(env, parsed.family).revoke(parsed.tokenId, parsed.secret);
+}
+```
+
+- [ ] **Step 7: Export the DO from `src/index.ts`**
+
+Add (keep `export default app;`):
+
+```typescript
+export { RefreshFamily } from "./refreshFamily";
+```
+
+- [ ] **Step 8: Run tests + typecheck**
+
+Run: `pnpm test test/refresh.test.ts` → all refresh cases pass.
+Run: `pnpm test` → full worker suite passes (the `/token` and e2e flows now go through the DO). 
+Run: `pnpm typecheck` → clean (`env.REFRESH_FAMILY` typed by `wrangler types`).
+Expected: all green, pristine.
+
+- [ ] **Step 9: Commit**
+
+```bash
+git add -A
+git commit -m "feat: refresh tokens via per-family Durable Object (atomic rotation)"
+```
+
+---
+
+## Task 13: Credentialed CORS for browser refresh
+
+**Files:**
+- Create: `src/cors.ts`
+- Modify: `src/handlers.ts` (apply CORS on `/token` + `/logout`; add a preflight handler)
+- Modify: `src/index.ts` (register `OPTIONS /token`, `OPTIONS /logout`)
+- Test: `test/cors.test.ts`
+
+**Interfaces:**
+- Produces: `corsHeaders(env, request): Record<string,string> | null`,
+  `corsPreflight(c): Response`.
+
+- [ ] **Step 1: Write the failing CORS test**
+
+`test/cors.test.ts`:
+
+```typescript
+import { env } from "cloudflare:workers";
+import { describe, expect, it } from "vitest";
+import app from "../src/index";
+
+function ctx() {
+	return { ...env, waitUntil() {}, passThroughOnException() {} } as unknown as ExecutionContext;
+}
+
+describe("CORS for browser refresh", () => {
+	it("answers preflight for an allowlisted origin with credentialed CORS", async () => {
+		const res = await app.request(
+			"/token",
+			{ method: "OPTIONS", headers: { origin: "https://app1.yourdomain.com" } },
+			env,
+			ctx(),
+		);
+		expect(res.status).toBe(204);
+		expect(res.headers.get("access-control-allow-origin")).toBe("https://app1.yourdomain.com");
+		expect(res.headers.get("access-control-allow-credentials")).toBe("true");
+		expect(res.headers.get("vary")).toContain("Origin");
+	});
+
+	it("rejects preflight from a non-allowlisted origin", async () => {
+		const res = await app.request(
+			"/token",
+			{ method: "OPTIONS", headers: { origin: "https://evil.com" } },
+			env,
+			ctx(),
+		);
+		expect(res.status).toBe(403);
+		expect(res.headers.get("access-control-allow-origin")).toBeNull();
+	});
+
+	it("echoes CORS headers on a POST /token from an allowlisted origin", async () => {
+		const res = await app.request(
+			"/token",
+			{ method: "POST", headers: { origin: "https://app1.yourdomain.com" } },
+			env,
+			ctx(),
+		);
+		// No refresh cookie → 401, but CORS headers must still be present so the
+		// browser can read the response.
+		expect(res.headers.get("access-control-allow-origin")).toBe("https://app1.yourdomain.com");
+		expect(res.headers.get("access-control-allow-credentials")).toBe("true");
+	});
+});
+```
+
+- [ ] **Step 2: Run the test to verify it fails**
+
+Run: `pnpm test test/cors.test.ts`
+Expected: FAIL — no CORS handling / no `src/cors` module.
+
+- [ ] **Step 3: Implement `src/cors.ts`**
+
+```typescript
+import type { Context } from "hono";
+import { getConfig } from "./config";
+
+// Credentialed CORS headers for a cross-origin request from an allowlisted app
+// origin, or null when the origin is absent or not allowed. The allowlist is the
+// same first-party app origin set used for redirect validation.
+export function corsHeaders(env: Env, request: Request): Record<string, string> | null {
+	const origin = request.headers.get("origin");
+	if (!origin || !getConfig(env).redirectAllowlist.includes(origin)) return null;
+	return {
+		"Access-Control-Allow-Origin": origin,
+		"Access-Control-Allow-Credentials": "true",
+		"Access-Control-Allow-Methods": "POST, OPTIONS",
+		"Access-Control-Allow-Headers": "content-type",
+		Vary: "Origin",
+	};
+}
+
+export function corsPreflight(c: Context<{ Bindings: Env }>): Response {
+	const headers = corsHeaders(c.env, c.req.raw);
+	if (!headers) return c.body(null, 403);
+	return new Response(null, { status: 204, headers });
+}
+```
+
+- [ ] **Step 4: Apply CORS in `src/handlers.ts` (`token` and `logout`)**
+
+Add an import and a small helper at the top of `handlers.ts`:
+
+```typescript
+import { corsHeaders } from "./cors";
+```
+
+In BOTH the `token` and `logout` handlers, immediately before each `return`,
+attach CORS headers when the request origin is allowlisted:
+
+```typescript
+	const cors = corsHeaders(c.env, c.req.raw);
+	if (cors) for (const [k, v] of Object.entries(cors)) c.header(k, v, { append: true });
+```
+
+(Place it after the `Set-Cookie` headers are set and before the final `return` in
+each handler — both the success and the early-return 401 paths in `token` should
+carry CORS, so set `cors` once at the top of the handler and apply on every return
+path. The simplest correct shape: compute `cors` first, and write a tiny local
+`done(res)` that adds the headers — or just repeat the 2-line loop before each
+`return`.)
+
+- [ ] **Step 5: Register OPTIONS routes in `src/index.ts`**
+
+```typescript
+import { corsPreflight } from "./cors";
+// ...
+app.options("/token", corsPreflight);
+app.options("/logout", corsPreflight);
+```
+
+- [ ] **Step 6: Run tests**
+
+Run: `pnpm test test/cors.test.ts` → all 3 pass.
+Run: `pnpm test` → full suite green, pristine. Run `pnpm typecheck` → clean.
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add -A
+git commit -m "feat: credentialed CORS on /token and /logout for browser refresh"
+```
+
+---
+
+## Task 14: Review fix bundle (package build, GitHub validation, docs, test coverage)
+
+**Files:**
+- Modify: `packages/auth-verify/package.json` (add `prepare`)
+- Modify: `src/github.ts` (validate responses)
+- Modify: `README.md` (`/token` description)
+- Modify: `test/tokens.test.ts` (claim/TTL assertions)
+- Modify: `packages/auth-verify/test/verify.test.ts` (expired / iss / aud cases)
+
+- [ ] **Step 1: Make the package build on git install**
+
+In `packages/auth-verify/package.json`, add to `scripts`:
+
+```json
+		"prepare": "tsup src/index.ts --format esm --dts"
+```
+
+So a consumer's `pnpm add github:<you>/auth-verify#v1` builds `dist/` during install
+(devDeps incl. `tsup`/`typescript` are present). Verify: `pnpm --filter auth-verify install` (or root `pnpm install`) produces `dist/`.
+
+- [ ] **Step 2: Validate GitHub responses in `src/github.ts`**
+
+In `exchangeGithubCode`, after each `fetch`, check `response.ok` and validate the
+profile shape before minting claims. Replace the profile/email fetch block with:
+
+```typescript
+	const profileRes = await fetch("https://api.github.com/user", { headers });
+	if (!profileRes.ok) throw new Error(`github /user ${profileRes.status}`);
+	const profile = (await profileRes.json()) as GithubUser;
+	if (typeof profile.id !== "number") throw new Error("github profile missing id");
+
+	const emailsRes = await fetch("https://api.github.com/user/emails", { headers });
+	if (!emailsRes.ok) throw new Error(`github /user/emails ${emailsRes.status}`);
+	const emails = (await emailsRes.json()) as GithubEmail[];
+	const primary = emails.find((e) => e.primary && e.verified) ?? null;
+```
+
+(The existing `test/github.test.ts` happy path still passes; the stub returns 200 +
+a numeric `id`.)
+
+- [ ] **Step 3: Fix the `/token` description in `README.md`**
+
+Find the route docs and correct `/token`: it is called with the refresh **cookie**
+(no JSON body), and on success returns `200` with refreshed `Set-Cookie` headers
+(no token in the body). `/logout` returns `204` and clears cookies. Both accept
+credentialed CORS from allowlisted app origins.
+
+- [ ] **Step 4: Tighten `test/tokens.test.ts`**
+
+Add assertions to the existing test (after the current ones):
+
+```typescript
+		expect(payload.name).toBe("A B");
+		expect(typeof payload.iat).toBe("number");
+		expect(typeof payload.exp).toBe("number");
+		expect((payload.exp as number) - (payload.iat as number)).toBe(900);
+```
+
+- [ ] **Step 5: Add security-contract cases to `packages/auth-verify/test/verify.test.ts`**
+
+Add three cases that sign tokens with the test key and assert `requireUser` throws 401:
+an **expired** token (`setExpirationTime("-1m")`), an **issuer mismatch**
+(`setIssuer("https://evil")`), and an **audience mismatch** (`setAudience("other")`).
+Each: build the token with the same key/`kid` as the existing valid-token setup, then
+`await expect(requireUser(reqWith(token), OPTS)).rejects.toBeInstanceOf(Response)`.
+
+- [ ] **Step 6: Run all suites + typecheck**
+
+Run: `pnpm test` (worker), `pnpm --filter auth-verify test` (package),
+`pnpm typecheck`. All green, pristine, `dist/` built.
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add -A
+git commit -m "fix: package prepare build, GitHub response validation, doc + test coverage"
+```
