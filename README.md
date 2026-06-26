@@ -102,7 +102,7 @@ pnpm wrangler deploy
 
 ## Resource workers
 
-`packages/auth-verify` is developed in this repo and published to its own GitHub repository (tagged `v1`) so downstream resource workers can consume it without an npm account.
+The verifier lives in its own GitHub repository, [`echung32/auth-verify`](https://github.com/echung32/auth-verify) (tagged `v1`), so downstream resource workers — and this gateway's e2e test — can consume it via git dependency without an npm account.
 
 Install the verifier via git dependency:
 
@@ -153,13 +153,16 @@ https://auth.yourdomain.com/authorize?redirect_uri=<self>
 pnpm test
 ```
 
-Runs the Vitest worker pool suite (GitHub OAuth is stubbed — no real credentials needed). The `auth-verify` package has its own separate suite (below). Run `pnpm typecheck` for `tsc --noEmit`.
+Runs the Vitest worker pool suite (GitHub OAuth is stubbed — no real credentials needed), including an end-to-end test that verifies issued tokens through the published `auth-verify` package. The verifier's own unit suite lives in the [`echung32/auth-verify`](https://github.com/echung32/auth-verify) repo. Run `pnpm typecheck` for `tsc --noEmit`.
 
-### auth-verify package tests
+### Updating the verifier
 
-```bash
-pnpm --filter auth-verify test
-```
+The `auth-verify` devDependency is pinned to the `v1` tag and resolved to a specific commit in `pnpm-lock.yaml`, so installs stay reproducible. To pull a verifier change into this gateway:
+
+1. Make the change in the [`echung32/auth-verify`](https://github.com/echung32/auth-verify) repo, rebuild and commit `dist/`, then move/push the `v1` tag.
+2. Here, run `pnpm update auth-verify` to re-resolve the lockfile to the new commit, then `pnpm test` to confirm the e2e contract test still passes.
+
+Because `v1` is a moving tag, CI must install with `--frozen-lockfile` so the committed commit hash — not whatever `v1` currently points at — is authoritative.
 
 ### Regenerate Cloudflare types
 

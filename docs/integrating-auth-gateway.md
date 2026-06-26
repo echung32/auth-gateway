@@ -28,6 +28,26 @@ pnpm add github:echung32/auth-verify#v1
 
 `auth-verify` is a tiny helper (peer-dependency: `jose`) that verifies tokens offline.
 
+## Updating the verifier
+
+`v1` is a **moving tag**: when the verifier is hardened or fixed upstream, the tag is
+re-pointed at a new commit. Your install stays on the commit recorded in your lockfile
+until you explicitly update — so existing apps keep working, and `pnpm install` on a
+fresh checkout is reproducible. CI should run with `--frozen-lockfile` so the locked
+commit (not whatever `v1` points at now) is authoritative.
+
+To pull the latest verifier into your app:
+
+```bash
+pnpm update auth-verify   # re-resolves v1 to its current commit, rewrites the lockfile
+pnpm test                 # confirm nothing broke
+# commit package.json + pnpm-lock.yaml
+```
+
+If pnpm serves a cached ref and doesn't pick up the moved tag, force re-resolution with
+`pnpm install --force`. (npm: `npm update auth-verify`; yarn: `yarn up auth-verify`.)
+Each consuming repo pins its own commit, so bump them independently.
+
 ## Verify config (use these exact values)
 
 ```ts

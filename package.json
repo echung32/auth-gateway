@@ -20,6 +20,7 @@
   "devDependencies": {
     "@cloudflare/vitest-pool-workers": "^0.16.19",
     "@types/node": "^25.9.4",
+    "auth-verify": "github:echung32/auth-verify#v1",
     "typescript": "^5.9.3",
     "vitest": "^4.1.9",
     "wrangler": "^4.104.0"

@@ -1,6 +1,6 @@
 import { env } from "cloudflare:workers";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { requireUser } from "../packages/auth-verify/src/index";
+import { requireUser } from "auth-verify";
 import { getPublicJwks } from "../src/keys";
 import app from "../src/index";
 import { githubRoutes, json, stubFetch } from "./helpers";
