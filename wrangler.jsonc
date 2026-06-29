@@ -27,7 +27,7 @@
 		"ISSUER": "https://auth.ethanchung.dev",
 		"AUDIENCE": "fleet",
 		"COOKIE_DOMAIN": ".ethanchung.dev",
-		"ACCESS_TTL_SEC": "900",
+		"ACCESS_TTL_SEC": "3600",
 		"REFRESH_TTL_SEC": "2592000",
 		"REDIRECT_ALLOWLIST": "[\"https://ccusage.ethanchung.dev\"]",
 		"GITHUB_REDIRECT_URI": "https://auth.ethanchung.dev/callback",
