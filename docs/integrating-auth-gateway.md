@@ -128,9 +128,11 @@ Send the access JWT in the `Authorization` header:
 Authorization: Bearer <access-token>
 ```
 
-`requireUser` reads it the same way. (How a script obtains a token: complete the
-browser login once and copy the `__Secure-fleet_at` cookie value, or build a
-machine-to-machine grant later — out of scope here.)
+`requireUser` reads it the same way. For a **machine caller** that can't run the
+browser login, mint a service client and exchange it for tokens via the
+`client_credentials` grant — see
+[minting-service-tokens.md](./minting-service-tokens.md). (Ad hoc: complete the
+browser login once and copy the `__Secure-fleet_at` cookie value.)
 
 ## Logout
 
