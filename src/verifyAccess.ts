@@ -12,8 +12,8 @@ export async function verifyAccessToken(env: Env, request: Request): Promise<Use
 	const token = readAccessToken(request);
 	if (!token) throw unauthorized();
 	const cfg = getConfig(env);
-	// biome-ignore lint/suspicious/noExplicitAny: getPublicJwks returns a JWKS-shaped object jose accepts.
-	const jwks = createLocalJWKSet((await getPublicJwks(env)) as any);
+	// getPublicJwks returns a JWKS-shaped object that jose's createLocalJWKSet accepts.
+	const jwks = createLocalJWKSet((await getPublicJwks(env)) as Parameters<typeof createLocalJWKSet>[0]);
 	try {
 		const { payload } = await jwtVerify(token, jwks, { issuer: cfg.issuer, audience: cfg.audience });
 		return {
