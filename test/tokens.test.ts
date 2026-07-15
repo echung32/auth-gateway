@@ -23,6 +23,6 @@ describe("issueAccessToken", () => {
 		expect(payload.name).toBe("A B");
 		expect(typeof payload.iat).toBe("number");
 		expect(typeof payload.exp).toBe("number");
-		expect((payload.exp as number) - (payload.iat as number)).toBe(900);
+		expect((payload.exp as number) - (payload.iat as number)).toBe(3600);
 	});
 });

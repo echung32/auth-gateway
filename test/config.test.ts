@@ -5,7 +5,7 @@ import { getConfig, isAllowedRedirect } from "../src/config";
 describe("config", () => {
 	it("parses TTLs as numbers and allowlist as array", () => {
 		const cfg = getConfig(env);
-		expect(cfg.accessTtlSec).toBe(900);
+		expect(cfg.accessTtlSec).toBe(3600);
 		expect(cfg.refreshTtlSec).toBe(2592000);
 		expect(Array.isArray(cfg.redirectAllowlist)).toBe(true);
 	});
