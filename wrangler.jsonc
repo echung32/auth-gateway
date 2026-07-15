@@ -15,7 +15,8 @@
 		"nodejs_compat"
 	],
 	"kv_namespaces": [
-		{ "binding": "AUTH_KV", "id": "fd3b5ba4e71640ea841fb1d0cd89f643" }
+		{ "binding": "AUTH_KV", "id": "fd3b5ba4e71640ea841fb1d0cd89f643" },
+		{ "binding": "CLIENTS_KV", "id": "0000000000000000000000000000cccc" }
 	],
 	"durable_objects": {
 		"bindings": [{ "name": "REFRESH_FAMILY", "class_name": "RefreshFamily" }]
