@@ -16,7 +16,7 @@
 	],
 	"kv_namespaces": [
 		{ "binding": "AUTH_KV", "id": "fd3b5ba4e71640ea841fb1d0cd89f643" },
-		{ "binding": "CLIENTS_KV", "id": "0000000000000000000000000000cccc" }
+		{ "binding": "CLIENTS_KV", "id": "037794783073484ca6a5ec83686b4141" }
 	],
 	"durable_objects": {
 		"bindings": [{ "name": "REFRESH_FAMILY", "class_name": "RefreshFamily" }]
