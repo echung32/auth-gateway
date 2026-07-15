@@ -10,9 +10,12 @@ A centralized OAuth / authentication Cloudflare Worker for a fleet of apps on a 
 |--------|------|-------------|
 | `GET` | `/authorize` | Starts the GitHub OAuth flow. Accepts optional `redirect_uri` query param (must be in `REDIRECT_ALLOWLIST`). |
 | `GET` | `/callback` | GitHub redirects here after the user authorizes. Validates CSRF state, exchanges code for tokens, sets cookies, and redirects to `redirect_uri`. |
-| `POST` | `/token` | Refresh-token grant. Reads the refresh token from the `__Secure-fleet_rt` cookie (no JSON body); on success returns `200` with refreshed `Set-Cookie` headers (no token in response body). Rotation + theft-detection are atomic in the `RefreshFamily` Durable Object. Accepts credentialed CORS from allowlisted app origins. |
+| `POST` | `/token` | Two grants, dispatched by `grant_type`. **Refresh (default, no `grant_type`):** reads the refresh token from the `__Secure-fleet_rt` cookie (no JSON body); on success returns `200` with refreshed `Set-Cookie` headers (no token in response body). Rotation + theft-detection are atomic in the `RefreshFamily` Durable Object. Accepts credentialed CORS from allowlisted app origins. **`client_credentials` (form body with `client_id` + `client_secret`):** returns `200 { access_token, token_type, expires_in }` for a programmatic caller — see [Programmatic access](#programmatic-access-service-credentials). |
 | `POST` | `/logout` | Revokes the refresh-token family (via the `RefreshFamily` Durable Object) and returns `204` with cleared cookies. Accepts credentialed CORS from allowlisted app origins. |
 | `GET` | `/.well-known/jwks.json` | Publishes the public EdDSA key(s) as a JWKS. Resource workers fetch this to verify tokens offline. |
+| `POST` | `/clients` | Create a service client (fleet PAT) owned by the caller. Requires the caller's own access token (Bearer or `__Secure-fleet_at` cookie). Returns `client_id` + a one-time `client_secret`. |
+| `GET` | `/clients` | List the caller's own service clients (metadata only, never the secret). |
+| `DELETE` | `/clients/:id` | Revoke one of the caller's own service clients. |
 
 ---
 
@@ -72,6 +75,15 @@ Paste the printed `id` into `wrangler.jsonc`:
   { "binding": "AUTH_KV", "id": "<paste id here>" }
 ]
 ```
+
+### 1b. Create the service-client KV namespace
+
+```bash
+pnpm wrangler kv namespace create CLIENTS_KV
+```
+
+Paste the printed `id` into `wrangler.jsonc` → the `CLIENTS_KV` entry in
+`kv_namespaces`, replacing the placeholder id.
 
 ### 2. Generate the signing key and upload secrets
 
@@ -142,6 +154,47 @@ On a 401, a browser app should redirect the user to:
 ```
 https://auth.yourdomain.com/authorize?redirect_uri=<self>
 ```
+
+---
+
+## Programmatic access (service credentials)
+
+Machine callers that can't run the browser OAuth flow — a service hitting an
+internal API guarded by `auth-verify`, a cron job, a CLI — use **service
+clients**: self-service "personal access tokens" for the fleet.
+
+1. A logged-in user creates a client (a browser app sends the `__Secure-fleet_at`
+   cookie automatically; a CLI passes `Authorization: Bearer <access_token>`):
+
+   ```bash
+   curl -X POST https://auth.yourdomain.com/clients \
+     -H "authorization: Bearer $ACCESS_TOKEN" \
+     -H "content-type: application/json" \
+     -d '{"label":"ollama-caller"}'
+   # => { "client_id": "svc_…", "client_secret": "…", "label": "ollama-caller", "created_at": "…" }
+   ```
+
+   The `client_secret` is shown **only once** — store it in the calling service.
+
+2. The service exchanges its credentials for a short-lived JWT:
+
+   ```bash
+   curl -X POST https://auth.yourdomain.com/token \
+     -d grant_type=client_credentials \
+     -d client_id=svc_… \
+     -d client_secret=…
+   # => { "access_token": "<jwt>", "token_type": "Bearer", "expires_in": 3600 }
+   ```
+
+3. The service calls resource workers with `Authorization: Bearer <access_token>`.
+   `requireUser` verifies it unchanged. The token **acts as the owning user**
+   (same `sub`/`email`/scopes) and additionally carries `token_use: "service"` +
+   `client_id`, so a resource worker can distinguish automated calls if it wants
+   to. Re-exchange when the token expires.
+
+Revoking a client (`DELETE /clients/:id`) stops new tokens immediately; any
+already-issued token ages out within `ACCESS_TTL_SEC`. Service tokens carry no
+refresh token and set no cookies.
 
 ---
 
