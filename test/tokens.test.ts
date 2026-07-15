@@ -25,4 +25,24 @@ describe("issueAccessToken", () => {
 		expect(typeof payload.exp).toBe("number");
 		expect((payload.exp as number) - (payload.iat as number)).toBe(3600);
 	});
+
+	it("stamps marker claims when provided", async () => {
+		const token = await issueAccessToken(
+			env,
+			{ sub: "gh|1", email: null, name: null, scopes: [] },
+			{ token_use: "service", client_id: "svc_x" },
+		);
+		const jwks = createLocalJWKSet((await getPublicJwks(env)) as any);
+		const { payload } = await jwtVerify(token, jwks, { issuer: env.ISSUER, audience: env.AUDIENCE });
+		expect(payload.token_use).toBe("service");
+		expect(payload.client_id).toBe("svc_x");
+	});
+
+	it("omits marker claims for user tokens", async () => {
+		const token = await issueAccessToken(env, { sub: "gh|1", email: null, name: null, scopes: [] });
+		const jwks = createLocalJWKSet((await getPublicJwks(env)) as any);
+		const { payload } = await jwtVerify(token, jwks, { issuer: env.ISSUER, audience: env.AUDIENCE });
+		expect(payload.token_use).toBeUndefined();
+		expect(payload.client_id).toBeUndefined();
+	});
 });
