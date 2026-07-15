@@ -122,6 +122,6 @@ export async function listClientsHandler(c: Ctx): Promise<Response> {
 export async function deleteClientHandler(c: Ctx): Promise<Response> {
 	const caller = await requireCaller(c);
 	if (caller instanceof Response) return caller;
-	const ok = await deleteClient(c.env, caller.sub, c.req.param("id"));
+	const ok = await deleteClient(c.env, caller.sub, c.req.param("id") ?? "");
 	return ok ? c.body(null, 204) : c.text("not found", 404);
 }
