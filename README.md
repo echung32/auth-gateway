@@ -196,6 +196,9 @@ Revoking a client (`DELETE /clients/:id`) stops new tokens immediately; any
 already-issued token ages out within `ACCESS_TTL_SEC`. Service tokens carry no
 refresh token and set no cookies.
 
+Full walkthrough (minting, a token-cache helper, listing, revocation, security
+notes): [`docs/minting-service-tokens.md`](docs/minting-service-tokens.md).
+
 ---
 
 ## Development
